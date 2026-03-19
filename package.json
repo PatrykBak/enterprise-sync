@@ -1,0 +1,9 @@
+{
+  "name": "enterprise-sync-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
