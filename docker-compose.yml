@@ -5,7 +5,7 @@ x-healthcheck-defaults: &healthcheck_defaults
 
 services:
   postgres:
-    image: postgres:18.3-alpine
+    image: postgres:16.13-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -22,7 +22,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
 
   redis:
-    image: redis:8.6.1-alpine
+    image: redis:7.4-alpine
     restart: unless-stopped
     deploy:
       resources:
@@ -40,7 +40,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
 
   rabbitmq:
-    image: rabbitmq:4.2-management-alpine
+    image: rabbitmq:3.13-management-alpine
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
@@ -55,7 +55,7 @@ services:
     healthcheck:
       <<: *healthcheck_defaults
       interval: 10s
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
