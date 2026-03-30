@@ -4,3 +4,4 @@ dist/
 .env
 
 *.log
+dummy-100mb.ndjson
