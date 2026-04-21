@@ -3,4 +3,5 @@ export interface S3UploadResult {
   fileId: string;
   sha256: string;
   message: string;
+  objectKey: string;
 }

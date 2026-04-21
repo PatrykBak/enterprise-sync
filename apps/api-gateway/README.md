@@ -1,29 +1,45 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
-
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
-
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
 ## Description
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+API Gateway for the Enterprise Sync system. This service is the main entry point for data synchronization. Its primary responsibilities include:
+- Authenticating and authorizing incoming requests.
+- Handling large file uploads by streaming them directly to an S3-compatible object storage (MinIO) to minimize memory usage.
+- Verifying file integrity using SHA256 checksums.
+- Publishing events to a RabbitMQ message broker to trigger asynchronous processing by worker services.
+
+## Testing the Sync Transactions Endpoint (Large File Streaming)
+
+To test the large file streaming endpoint (`POST /api/sync-transactions`), which features efficient, low-memory streaming, follow these steps:
+
+### 1. Start the Development Environment
+From the root of the project, run the main infrastructure script. This will start all required Docker containers (MinIO, Postgres, RabbitMQ) and the API Gateway server:
+```bash
+$ bash start-dev.sh
+```
+
+### 2. Prepare the MinIO Bucket
+Before uploading, the target bucket must exist in the Object Storage:
+1. Open the MinIO Console in your browser: `http://localhost:9001`
+2. Log in with the credentials defined in your `.env` file (default: `admin` / `password`).
+3. Navigate to **Buckets** and create a new bucket named `transactions-bucket`.
+
+### 3. Generate a Dummy Payload
+Generate a large test NDJSON file (e.g., 2000MB) using the utility script. The script will also calculate the file's SHA256 hash and print the complete `curl` command required for the next step.
+```bash
+$ node generate-dummy.js
+```
+
+### 4. Execute the Test Request
+Copy the `curl` command that was printed to your console in the previous step and execute it. It includes all required headers for authentication, correlation, tenancy, and integrity verification.
+
+The command will look similar to the one below:
+```bash
+$ curl -X POST http://localhost:3000/api/sync-transactions \
+  -H "Authorization: Bearer dev-secret-token" \
+  -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \
+  -H "X-Tenant-ID: test-tenant-1" \
+  -H "X-Expected-Hash: 9670671415ff6efe81b936aedca641c519ad0c1399ad745e98d707f145e841c3" \
+  -F "file=@dummy-2000mb.ndjson;type=application/x-ndjson"
+```
 
 ## Project setup
 
@@ -36,12 +52,6 @@ $ pnpm install
 ```bash
 # development
 $ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
 ```
 
 ## Run tests
@@ -49,50 +59,4 @@ $ pnpm run start:prod
 ```bash
 # unit tests
 $ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
 ```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).

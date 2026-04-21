@@ -107,7 +107,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         // The chunk itself is passed on unmodified to the next stream in the pipeline.
         // This allows for on-the-fly hash calculation without an extra read pass.
         const hashTransform = new Transform({
-          transform(chunk, encoding, callback) {
+          transform(chunk: Buffer, encoding: BufferEncoding, callback) {
             hasher.update(chunk);
             callback(null, chunk);
           },
@@ -169,6 +169,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
               fileId: fileId,
               sha256: calculatedHash,
               message: 'File accepted and queued for processing',
+              objectKey: objectKey,
             };
             resolve(next.handle());
           })
