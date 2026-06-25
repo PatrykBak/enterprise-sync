@@ -3,33 +3,91 @@ import {
   Logger,
   OnModuleInit,
   OnModuleDestroy,
-  InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { connect, ChannelModel, ConfirmChannel } from 'amqplib';
+import { connect, ConfirmChannel, ChannelModel } from 'amqplib';
+
+export interface RabbitMQOptions {
+  exchange: string;
+  routingKey: string;
+}
+
+export class RabbitMQPublishException extends Error {
+  constructor(
+    message: string,
+    public readonly originalError?: unknown,
+  ) {
+    super(message);
+    this.name = 'RabbitMQPublishException';
+  }
+}
+
+const DEFAULT_PUBLISH_TIMEOUT_MS = 3000;
+const DEFAULT_MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 500;
+const MAX_RETRY_DELAY_MS = 4000;
 
 @Injectable()
 export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
   private connection!: ChannelModel;
   private channel!: ConfirmChannel;
   private readonly logger = new Logger(RabbitMQService.name);
+  private isConnecting = false;
 
-  constructor(private configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly options: RabbitMQOptions,
+  ) {}
 
-  async onModuleInit() {
+  async onModuleInit(): Promise<void> {
+    if (this.isConnecting) {
+      return;
+    }
+    this.isConnecting = true;
+
+    try {
+      await this.connectWithRetry();
+      await this.setupChannel();
+    } finally {
+      this.isConnecting = false;
+    }
+  }
+
+  private async connectWithRetry(): Promise<void> {
     const user = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_USER');
     const pass = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_PASS');
+    const host = this.configService.getOrThrow<string>('RABBITMQ_HOST');
+    const portStr = this.configService.getOrThrow<string>('RABBITMQ_PORT');
+    const port = Number(portStr);
 
-    const safeUser = encodeURIComponent(user);
-    const safePass = encodeURIComponent(pass);
+    if (isNaN(port)) {
+      throw new Error(`Invalid RABBITMQ_PORT: "${portStr}" is not a number`);
+    }
 
-    const url = `amqp://${safeUser}:${safePass}@localhost:5672`;
+    const url = `amqp://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
 
-    this.logger.log(
-      `Connecting to RabbitMQ with user "${user}" at localhost:5672`,
-    );
+    this.logger.log(`Connecting to RabbitMQ at ${host}:${port}`);
 
-    this.connection = await connect(url);
+    const maxAttempts = 5;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        this.connection = await connect(url);
+        break;
+      } catch (error) {
+        if (attempt === maxAttempts) {
+          this.logger.error(
+            `Failed to connect to RabbitMQ after ${maxAttempts} attempts`,
+          );
+          throw error;
+        }
+        const delay = Math.min(Math.pow(2, attempt - 1) * 1000, 32000);
+        this.logger.warn(
+          `RabbitMQ connection failed. Retrying in ${delay}ms... (Attempt ${attempt}/${maxAttempts})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
 
     this.connection.on('error', (err) => {
       this.logger.error('RabbitMQ connection error:', err);
@@ -37,7 +95,9 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
     this.connection.on('close', () => {
       this.logger.warn('RabbitMQ connection closed.');
     });
+  }
 
+  private async setupChannel(): Promise<void> {
     this.channel = await this.connection.createConfirmChannel();
 
     this.channel.on('error', (err) => {
@@ -47,7 +107,7 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn('RabbitMQ channel closed.');
     });
 
-    const exchangeName = 'integration.events';
+    const exchangeName = this.options.exchange;
     await this.channel.assertExchange(exchangeName, 'topic', { durable: true });
 
     this.logger.log(
@@ -55,34 +115,79 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async onModuleDestroy() {
+  async onModuleDestroy(): Promise<void> {
     try {
-      if (this.channel) await this.channel.close();
-      if (this.connection) await this.connection.close();
+      if (this.channel) {
+        await this.channel.close();
+      }
+      if (this.connection) {
+        await this.connection.close();
+      }
     } catch (err) {
       this.logger.error('Error closing RabbitMQ connection on destroy', err);
     }
   }
 
-  /**
-   * Publishes an event to RabbitMQ using a ConfirmChannel.
-   *
-   * A ConfirmChannel guarantees that the message has been either accepted or
-   * rejected by the broker. This method wraps the callback-based amqplib publish
-   * into a Promise with a timeout to prevent the application from hanging indefinitely.
-   */
-  async publishEvent(
+  async publish(
+    payload: Record<string, unknown>,
+    correlationId: string,
+    timeoutMs: number = DEFAULT_PUBLISH_TIMEOUT_MS,
+  ): Promise<void> {
+    const maxRetries = DEFAULT_MAX_RETRIES;
+
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(JSON.stringify(payload));
+    } catch (serializationError) {
+      throw new Error('Failed to serialize payload to JSON', {
+        cause: serializationError,
+      });
+    }
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await this.publishWithTimeout(
+          this.options.exchange,
+          this.options.routingKey,
+          buffer,
+          timeoutMs,
+        );
+        return;
+      } catch (error: unknown) {
+        const isRetryable = this.isRetryableError(error);
+
+        if (isRetryable && attempt < maxRetries) {
+          const delay = Math.min(
+            Math.pow(2, attempt) * INITIAL_RETRY_DELAY_MS,
+            MAX_RETRY_DELAY_MS,
+          );
+          this.logger.warn(
+            `RabbitMQ publish failed with retryable error (attempt ${attempt + 1}/${maxRetries + 1}): ${this.getErrorMessage(error)}. Retrying in ${delay}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          this.logger.error(
+            `[CRITICAL] Failed to publish message to RabbitMQ after ${attempt + 1} attempts. CorrelationId: ${correlationId}. Message: ${JSON.stringify(payload)}`,
+          );
+          throw new RabbitMQPublishException(
+            `Failed to publish message after ${attempt + 1} attempts`,
+            error,
+          );
+        }
+      }
+    }
+  }
+
+  private publishWithTimeout(
     exchange: string,
     routingKey: string,
-    payload: Record<string, any>,
-    timeoutMs = 3000,
+    buffer: Buffer,
+    timeoutMs: number,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const buffer = Buffer.from(JSON.stringify(payload));
-
+    return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         reject(
-          new InternalServerErrorException(
+          new RabbitMQPublishException(
             `RabbitMQ publish timeout after ${timeoutMs}ms`,
           ),
         );
@@ -93,16 +198,14 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
           exchange,
           routingKey,
           buffer,
-
           { persistent: true },
-
           (err) => {
             clearTimeout(timeoutId);
-
             if (err) {
               reject(
-                new InternalServerErrorException(
-                  `Broker rejected message: ${err instanceof Error ? err.message : String(err)}`,
+                new RabbitMQPublishException(
+                  `Broker rejected message: ${this.getErrorMessage(err)}`,
+                  err,
                 ),
               );
             } else {
@@ -115,5 +218,32 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  private isRetryableError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const err = error as Record<string, unknown>;
+    const code = typeof err.code === 'string' ? err.code : undefined;
+    const message = typeof err.message === 'string' ? err.message : undefined;
+
+    if (code === 'ECONNREFUSED') {
+      return true;
+    }
+
+    if (message) {
+      const lowerMessage = message.toLowerCase();
+      return (
+        lowerMessage.includes('channel') || lowerMessage.includes('timeout')
+      );
+    }
+
+    return false;
+  }
+
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

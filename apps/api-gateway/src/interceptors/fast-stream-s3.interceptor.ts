@@ -9,264 +9,256 @@ import {
   Inject,
   Logger,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import busboy from 'busboy';
 import { Upload } from '@aws-sdk/lib-storage';
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
-import { Observable } from 'rxjs';
-import { PassThrough, Transform } from 'stream';
+import { Observable, from, switchMap } from 'rxjs';
+import { PassThrough, Transform, type TransformCallback } from 'stream';
 import { pipeline } from 'stream/promises';
-import { createHash } from 'crypto';
+import { createHash, type BinaryLike } from 'crypto';
 import { S3_CLIENT_TOKEN } from '../s3.module';
 import { ConfigService } from '@nestjs/config';
 import { S3UploadResult } from '../s3-upload-result.interface';
 
-/**
- * A NestJS interceptor that efficiently streams a multipart file upload directly to an S3-compatible
- * object storage without buffering the entire file in memory or on disk.
- *
- * It performs the following operations in a single pass:
- * 1. Parses the multipart/form-data stream using `busboy`.
- * 2. Calculates the file's SHA256 hash on the fly.
- * 3. Streams the file directly to S3 using `@aws-sdk/lib-storage`'s Upload.
- * 4. Validates required headers (`Content-Type`, `X-Expected-Hash`).
- * 5. Verifies the file's integrity by comparing the calculated hash with the expected hash.
- * 6. Handles various error scenarios gracefully (e.g., client disconnect, size limits, hash mismatch).
- */
+const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const S3_UPLOAD_QUEUE_SIZE = 4;
+const S3_UPLOAD_PART_SIZE_BYTES = 5 * 1024 * 1024;
+
 @Injectable()
 export class FastStreamToS3Interceptor implements NestInterceptor {
   private readonly logger = new Logger(FastStreamToS3Interceptor.name);
+  private readonly bucketName: string;
+  private readonly ALLOWED_MIME_TYPES = [
+    'application/x-ndjson',
+    'application/octet-stream',
+    'application/json',
+  ];
 
   constructor(
     @Inject(S3_CLIENT_TOKEN) private readonly s3Client: S3Client,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    const bucketName = this.configService.get<string>('S3_BUCKET_NAME');
 
-  async intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Promise<Observable<S3UploadResult>> {
+    if (!bucketName) {
+      throw new Error('S3_BUCKET_NAME environment variable is required');
+    }
+
+    this.bucketName = bucketName;
+  }
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const req = context.switchToHttp().getRequest<Request>();
 
     const contentType = req.headers['content-type'];
-    if (!contentType || !contentType.includes('multipart/form-data')) {
+    if (!contentType?.includes('multipart/form-data')) {
       throw new BadRequestException(
         'Expected Content-Type: multipart/form-data header.',
       );
     }
 
-    const expectedHash = req.headers['x-expected-hash'] as string;
+    const expectedHash = this.extractExpectedHash(req);
+
+    return from(this.processUpload(req, expectedHash)).pipe(
+      switchMap((uploadResult: S3UploadResult) => {
+        Object.assign(req, { uploadedFile: uploadResult });
+        return next.handle();
+      }),
+    );
+  }
+
+  private extractExpectedHash(req: Request): string {
+    const expectedHashRaw = req.headers['x-expected-hash'];
+    const expectedHash = Array.isArray(expectedHashRaw)
+      ? expectedHashRaw[0]
+      : expectedHashRaw;
+
     if (!expectedHash) {
       throw new BadRequestException(
         'Missing required checksum header: X-Expected-Hash.',
       );
     }
 
-    // The entire stream processing logic is wrapped in a Promise.
-    // This is because `busboy` is an event-driven parser, and its lifecycle
-    // doesn't align directly with the async/await or Observable patterns
-    // expected by NestJS interceptors. This Promise resolves or rejects
-    // based on the outcome of the stream processing.
+    return expectedHash;
+  }
+
+  private async processUpload(
+    req: Request,
+    expectedHash: string,
+  ): Promise<S3UploadResult> {
     return new Promise((resolve, reject) => {
       const bb = busboy({
         headers: req.headers,
-        limits: {
-          fileSize: 2 * 1024 * 1024 * 1024,
-          files: 1,
-        },
+        limits: { fileSize: MAX_FILE_SIZE_BYTES, files: 1 },
       });
 
       let isFileDetected = false;
-      let uploadTask: Upload | null = null;
+      let uploadTask: Upload | undefined;
+      let uploadObjectKey = 'unknown';
+
+      const abortUpload = () => {
+        uploadTask
+          ?.abort()
+          .catch((e) =>
+            this.logger.error(
+              `Failed to abort S3 upload task for key ${uploadObjectKey}`,
+              e,
+            ),
+          );
+      };
 
       bb.on('file', (name, fileStream, info) => {
         isFileDetected = true;
         const { filename, mimeType } = info;
 
-        if (
-          mimeType !== 'application/x-ndjson' &&
-          mimeType !== 'application/octet-stream'
-        ) {
-          // If the file type is invalid, we must consume the rest of the stream
-          // to prevent the request from hanging, then reject.
+        if (!this.ALLOWED_MIME_TYPES.includes(mimeType)) {
           fileStream.resume();
           return reject(
-            new BadRequestException(`Invalid file type: ${mimeType}`),
+            new BadRequestException(
+              `Invalid file type: ${mimeType}. Allowed types: ${this.ALLOWED_MIME_TYPES.join(
+                ', ',
+              )}`,
+            ),
           );
         }
 
-        const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
         const fileId = uuidv4();
-        const objectKey = `transactions/${fileId}/${sanitizedFilename}`;
+        uploadObjectKey = `transactions/${fileId}/${filename.replace(
+          /[^a-zA-Z0-9.-]/g,
+          '_',
+        )}`;
 
         const hasher = createHash('sha256');
 
-        // This Transform stream acts as a "passthrough" with a side effect.
-        // For each chunk of data that flows through it, it updates the SHA256 hasher.
-        // The chunk itself is passed on unmodified to the next stream in the pipeline.
-        // This allows for on-the-fly hash calculation without an extra read pass.
         const hashTransform = new Transform({
-          transform(chunk: Buffer, encoding: BufferEncoding, callback) {
-            hasher.update(chunk);
-            callback(null, chunk);
+          transform(chunk: Buffer, _encoding: string, cb: TransformCallback) {
+            hasher.update(chunk as BinaryLike);
+            cb(null, chunk);
           },
         });
 
         const passThrough = new PassThrough();
 
-        const bucketName = this.configService.get<string>(
-          'S3_BUCKET_NAME',
-          'transactions-bucket',
-        );
-
-        // The S3 Upload utility from `@aws-sdk/lib-storage` handles multipart uploads
-        // automatically. It reads from the `passThrough` stream.
         uploadTask = new Upload({
           client: this.s3Client,
           params: {
-            Bucket: bucketName,
-            Key: objectKey,
+            Bucket: this.bucketName,
+            Key: uploadObjectKey,
             Body: passThrough,
             ContentType: mimeType,
           },
-          queueSize: 4,
-          partSize: 5 * 1024 * 1024,
+          queueSize: S3_UPLOAD_QUEUE_SIZE,
+          partSize: S3_UPLOAD_PART_SIZE_BYTES,
         });
 
-        // `pipeline` connects the streams together. Data flows from `fileStream` (from the client),
-        // through `hashTransform` (for hashing), and into `passThrough` (which the S3 Upload consumes).
-        // `pipeline` also ensures that if one stream fails, all streams in the pipeline are destroyed.
+        const uploadPromise = uploadTask.done();
+
         const pipelinePromise = pipeline(
           fileStream,
           hashTransform,
           passThrough,
         );
 
-        // This is the critical synchronization point. We wait for two separate asynchronous
-        // operations to complete:
-        // 1. `uploadTask.done()`: The S3 upload is complete.
-        // 2. `pipelinePromise`: The entire file has been read from the client and passed through our local pipeline.
-        // Only when both are finished can we be sure the file is on S3 and we have the final hash.
-        Promise.all([uploadTask.done(), pipelinePromise])
-          .then(async () => {
-            const calculatedHash = hasher.digest('hex');
+        void this.handleUploadCompletion(
+          pipelinePromise,
+          uploadPromise,
+          hasher,
+          expectedHash,
+          uploadObjectKey,
+          fileId,
+          uploadTask,
+          resolve,
+          reject,
+        );
 
-            if (calculatedHash !== expectedHash) {
-              this.logger.warn(
-                `[Integrity Error] Hash mismatch. Expected: ${expectedHash}, Got: ${calculatedHash}. Deleting file...`,
-              );
-              await this.s3Client.send(
-                new DeleteObjectCommand({ Bucket: bucketName, Key: objectKey }),
-              );
-              return reject(new BadRequestException('Checksum mismatch'));
-            }
-
-            // Attach the upload result to the request object for the controller to access
-            // via a custom decorator (@UploadedS3File).
-            req['uploadedFile'] = {
-              status: 'accepted',
-              fileId: fileId,
-              sha256: calculatedHash,
-              message: 'File accepted and queued for processing',
-              objectKey: objectKey,
-            };
-            resolve(next.handle());
-          })
-          .catch(async (err) => {
-            // Centralized error handling for the pipeline or S3 upload.
-            // If an upload was in progress, we must abort it to clean up any partial
-            // data on S3 and release resources.
-            if (uploadTask) {
-              await uploadTask
-                .abort()
-                .catch((e) =>
-                  this.logger.error(
-                    'Failed to abort upload task during stream error',
-                    e,
-                  ),
-                );
-            }
-            const errorMessage =
-              err instanceof Error ? err.message : String(err);
-            reject(
-              new InternalServerErrorException(
-                `Streaming failed: ${errorMessage}`,
-              ),
-            );
-          });
-
-        // Handles the case where the file exceeds the size limit defined in `busboy`.
         fileStream.on('limit', () => {
-          // Abort the S3 upload if it has started.
-          if (uploadTask) {
-            uploadTask
-              .abort()
-              .catch((e) =>
-                this.logger.error(
-                  'Failed to abort upload task on size limit',
-                  e,
-                ),
-              );
-          }
+          abortUpload();
           reject(
             new PayloadTooLargeException(
-              'File exceeded the allowed size limit (2 GB).',
+              `File exceeded the allowed size limit (${MAX_FILE_SIZE_BYTES} bytes).`,
             ),
           );
         });
       });
 
-      // Handles the case where the client sends a multipart request but without a file part.
       bb.on('finish', () => {
         if (!isFileDetected) {
-          return reject(
-            new BadRequestException('No file found in the request.'),
-          );
+          reject(new BadRequestException('No file found in the request.'));
         }
       });
 
-      // Handles client-side connection termination (e.g., user closes browser tab).
       req.on('aborted', () => {
-        if (uploadTask) {
-          this.logger.warn(
-            'Client aborted HTTP connection. Terminating upload...',
-          );
-          uploadTask
-            .abort()
-            .catch((e) =>
-              this.logger.error(
-                'Failed to abort upload task on client disconnect',
-                e,
-              ),
-            );
-        }
+        this.logger.warn(
+          'Client aborted HTTP connection. Terminating upload...',
+        );
+        abortUpload();
         reject(new BadRequestException('Connection aborted by the client.'));
       });
 
-      // Handles parsing errors from busboy itself (e.g., malformed multipart data).
-      bb.on('error', (err) => {
-        if (uploadTask) {
-          uploadTask
-            .abort()
-            .catch((e) =>
-              this.logger.error(
-                'Failed to abort upload task on Busboy error',
-                e,
-              ),
-            );
-        }
-        const errorMessage = err instanceof Error ? err.message : String(err);
+      bb.on('error', (err: Error) => {
+        this.logger.error('Busboy parsing error. Terminating upload...', err);
+        abortUpload();
         reject(
           new InternalServerErrorException(
-            `Busboy parsing error: ${errorMessage}`,
+            `Busboy parsing error: ${err.message}`,
           ),
         );
       });
 
-      // This starts the entire process. It connects the incoming request stream (`req`)
-      // to the `busboy` parser, which will then start emitting events like 'file'.
       req.pipe(bb);
     });
+  }
+
+  private async handleUploadCompletion(
+    pipelinePromise: Promise<void>,
+    uploadPromise: Promise<unknown>,
+    hasher: ReturnType<typeof createHash>,
+    expectedHash: string,
+    uploadObjectKey: string,
+    fileId: string,
+    uploadTask: Upload | undefined,
+    resolve: (value: S3UploadResult) => void,
+    reject: (error: Error) => void,
+  ): Promise<void> {
+    try {
+      await pipelinePromise;
+      const calculatedHash = hasher.digest('hex');
+
+      if (calculatedHash !== expectedHash) {
+        this.logger.warn(
+          `[Integrity Error] Hash mismatch for key ${uploadObjectKey}. Expected: ${expectedHash}, Got: ${calculatedHash}. Aborting upload.`,
+        );
+        await uploadTask?.abort();
+        return reject(new BadRequestException('Checksum mismatch'));
+      }
+
+      this.logger.log(
+        `Hash for key ${uploadObjectKey} is valid. Waiting for S3 upload to complete.`,
+      );
+      await uploadPromise;
+
+      const result: S3UploadResult = {
+        status: 'accepted',
+        fileId,
+        sha256: calculatedHash,
+        message: 'File accepted and queued for processing',
+        objectKey: uploadObjectKey,
+      };
+
+      resolve(result);
+    } catch (error) {
+      this.logger.error(
+        `Streaming or upload failed for key ${uploadObjectKey}. Aborting.`,
+        error,
+      );
+      await uploadTask?.abort();
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      reject(
+        new InternalServerErrorException(`Streaming failed: ${errorMessage}`),
+      );
+    }
   }
 }

@@ -7,8 +7,8 @@ import {
   HttpCode,
   HttpStatus,
   Headers,
+  Logger,
 } from '@nestjs/common';
-import { ApiOperation, ApiConsumes, ApiHeader } from '@nestjs/swagger';
 import { AppService } from './app.service';
 import { FastStreamToS3Interceptor } from './interceptors/fast-stream-s3.interceptor';
 import { UploadedS3File } from './uploaded-s3-file.decorator';
@@ -17,43 +17,37 @@ import { ZeroTrustAuthGuard } from './zero-trust-auth.guard';
 
 @Controller('api')
 export class AppController {
+  private readonly logger = new Logger(AppController.name);
+
   constructor(private readonly appService: AppService) {}
 
   @Post('sync-transactions')
   @HttpCode(HttpStatus.ACCEPTED)
-  @ApiOperation({ summary: 'Streams file to S3 and queues for processing' })
-  @ApiConsumes('multipart/form-data')
-  @ApiHeader({
-    name: 'x-correlation-id',
-    description: 'A unique ID to trace the request through the system.',
-    required: true,
-  })
-  @ApiHeader({
-    name: 'x-tenant-id',
-    description: 'The identifier for the tenant initiating the sync.',
-    required: true,
-  })
-  @ApiHeader({
-    name: 'x-expected-hash',
-    description: 'The SHA256 hash of the file for integrity verification.',
-    required: true,
-  })
   @UseGuards(ZeroTrustAuthGuard)
   @UseInterceptors(FastStreamToS3Interceptor)
   async syncTransactions(
     @UploadedS3File() uploadedFile: S3UploadResult,
-    @Headers('x-expected-hash') expectedHash: string,
-    @Headers('x-correlation-id') correlationId: string,
-    @Headers('x-tenant-id') tenantId: string,
-  ) {
+    @Headers('x-expected-hash') expectedHash: string | undefined,
+    @Headers('x-correlation-id') correlationId: string | undefined,
+    @Headers('x-tenant-id') tenantId: string | undefined,
+  ): Promise<{ status: string; correlationId: string }> {
     if (!uploadedFile) {
-      throw new BadRequestException('File was not uploaded.');
+      throw new BadRequestException({
+        message: 'File was not uploaded',
+        correlationId: 'unknown',
+      });
     }
 
-    if (!correlationId || !tenantId || !expectedHash) {
-      throw new BadRequestException(
-        'Missing required headers: X-Correlation-ID, X-Tenant-ID, X-Expected-Hash',
-      );
+    if (!expectedHash || !correlationId || !tenantId) {
+      throw new BadRequestException({
+        message: 'Missing required headers',
+        missing: [
+          ...(!expectedHash ? ['x-expected-hash'] : []),
+          ...(!correlationId ? ['x-correlation-id'] : []),
+          ...(!tenantId ? ['x-tenant-id'] : []),
+        ],
+        correlationId: correlationId ?? 'unknown',
+      });
     }
 
     await this.appService.processSyncTransaction(
@@ -63,6 +57,9 @@ export class AppController {
       tenantId,
     );
 
-    return uploadedFile;
+    return {
+      status: 'accepted',
+      correlationId,
+    };
   }
 }

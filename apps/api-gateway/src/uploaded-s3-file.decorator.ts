@@ -1,5 +1,5 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { S3UploadResult } from './s3-upload-result.interface';
+import type { S3UploadResult } from './s3-upload-result.interface';
 
 export const UploadedS3File = createParamDecorator(
   (data: unknown, ctx: ExecutionContext): S3UploadResult | undefined => {

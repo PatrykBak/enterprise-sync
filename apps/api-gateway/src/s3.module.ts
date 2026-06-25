@@ -11,11 +11,8 @@ export const S3_CLIENT_TOKEN = Symbol('S3_CLIENT');
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         return new S3Client({
-          region: configService.get<string>('AWS_REGION', 'us-east-1'),
-          endpoint: configService.get<string>(
-            'MINIO_ENDPOINT',
-            'http://localhost:9000',
-          ),
+          region: configService.getOrThrow<string>('S3_REGION'),
+          endpoint: configService.getOrThrow<string>('S3_ENDPOINT_URL'),
           credentials: {
             accessKeyId: configService.getOrThrow<string>('MINIO_ROOT_USER'),
             secretAccessKey: configService.getOrThrow<string>(
