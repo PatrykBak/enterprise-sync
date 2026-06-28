@@ -1,0 +1,17 @@
+# Terraform variables example file
+# Copy this file to terraform.tfvars and fill in the values
+
+aws_region = "eu-central-1"
+environment = "dev"
+project_name = "enterprise-sync"
+
+# Database credentials
+db_username = "admin"
+db_password = "CHANGE_ME_secure_password"
+
+# Redis auth token (minimum 16 characters)
+redis_auth_token = "CHANGE_ME_min_16_chars"
+
+# RabbitMQ credentials
+mq_username = "admin"
+mq_password = "CHANGE_ME_secure_password"

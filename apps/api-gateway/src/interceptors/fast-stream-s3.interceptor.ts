@@ -49,7 +49,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
     this.bucketName = bucketName;
   }
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const req = context.switchToHttp().getRequest<Request>();
 
     const contentType = req.headers['content-type'];

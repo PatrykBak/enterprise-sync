@@ -1,17 +1,22 @@
+import './tracing';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AppLogger } from './app.logger';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
-  const configService = app.get<ConfigService>(ConfigService);
+  const app = await NestFactory.create(AppModule, {
+    logger: false,
+  });
+  const logger = app.get(AppLogger);
+  app.useLogger(logger);
+  const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') ?? 3000;
   await app.listen(port);
 }
 
-bootstrap().catch((error: unknown) => {
-  Logger.error(
+bootstrap().catch((error: unknown): void => {
+  console.error(
     `Application crashed during startup: ${error instanceof Error ? error.stack : String(error)}`,
   );
   process.exit(1);

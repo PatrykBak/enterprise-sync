@@ -1,5 +1,6 @@
 import { Module, DynamicModule, Provider } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ClsService } from 'nestjs-cls';
 import { RabbitMQService } from './rabbitmq.service';
 
 const DEFAULT_EXCHANGE = 'integration.events';
@@ -22,9 +23,16 @@ export class RabbitMQModule {
 
     const rabbitMQServiceProvider: Provider = {
       provide: RabbitMQService,
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        return new RabbitMQService(configService, { exchange, routingKey });
+      inject: [ConfigService, ClsService],
+      useFactory: (
+        configService: ConfigService,
+        clsService: ClsService<Record<string, unknown>>,
+      ) => {
+        return new RabbitMQService(
+          configService,
+          { exchange, routingKey },
+          clsService,
+        );
       },
     };
 

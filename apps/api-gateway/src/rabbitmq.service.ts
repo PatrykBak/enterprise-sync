@@ -5,6 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ClsService } from 'nestjs-cls';
 import { connect, ConfirmChannel, ChannelModel } from 'amqplib';
 
 export interface RabbitMQOptions {
@@ -37,6 +38,7 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly options: RabbitMQOptions,
+    private readonly clsService: ClsService<Record<string, unknown>>,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -184,6 +186,7 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
     buffer: Buffer,
     timeoutMs: number,
   ): Promise<void> {
+    const correlationId = this.clsService.get<string>('correlationId') ?? '';
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         reject(
@@ -198,7 +201,10 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
           exchange,
           routingKey,
           buffer,
-          { persistent: true },
+          {
+            persistent: true,
+            headers: { 'x-correlation-id': correlationId },
+          },
           (err) => {
             clearTimeout(timeoutId);
             if (err) {

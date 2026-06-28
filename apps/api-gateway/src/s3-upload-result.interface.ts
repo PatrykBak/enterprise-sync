@@ -1,5 +1,5 @@
 export interface S3UploadResult {
-  status: string;
+  status: 'accepted' | 'rejected' | 'processing';
   fileId: string;
   sha256: string;
   message: string;

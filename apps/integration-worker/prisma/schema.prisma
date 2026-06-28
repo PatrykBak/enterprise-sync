@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model IntegrationJob {
+  id        String    @id @default(uuid()) @db.Uuid
+  fileId    String    @unique
+  status    JobStatus @default(PENDING)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  transactions TransactionLog[]
+}
+
+model TransactionLog {
+  id              String         @id @default(uuid()) @db.Uuid
+  jobId           String         @db.Uuid
+  transactionId   String
+  amount          Decimal        @db.Decimal(18, 2)
+  currency        String
+  senderAccount   String
+  receiverAccount String
+  timestamp       DateTime
+
+  job IntegrationJob @relation(fields: [jobId], references: [id])
+
+  @@unique([jobId, transactionId])
+}
