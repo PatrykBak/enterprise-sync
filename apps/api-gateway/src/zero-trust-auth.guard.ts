@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
-import { timingSafeEqual } from 'crypto';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -17,13 +16,7 @@ export interface AuthenticatedRequest extends Request {
 
 @Injectable()
 export class ZeroTrustAuthGuard implements CanActivate {
-  private readonly expectedBuffer: Buffer;
-
-  constructor(private readonly configService: ConfigService) {
-    this.expectedBuffer = Buffer.from(
-      this.configService.getOrThrow<string>('DEV_SECRET_TOKEN'),
-    );
-  }
+  constructor(private readonly configService: ConfigService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -36,12 +29,10 @@ export class ZeroTrustAuthGuard implements CanActivate {
     }
 
     const token = authHeader.slice(7);
-    const tokenBuffer = Buffer.from(token);
+    const expectedToken =
+      this.configService.getOrThrow<string>('DEV_SECRET_TOKEN');
 
-    if (
-      tokenBuffer.length !== this.expectedBuffer.length ||
-      !timingSafeEqual(tokenBuffer, this.expectedBuffer)
-    ) {
+    if (token !== expectedToken) {
       throw new UnauthorizedException('Wrong token (Zero Trust).');
     }
 

@@ -19,31 +19,15 @@ import {
 import { connect, Channel, ChannelModel } from 'amqplib';
 import { Redis } from 'ioredis';
 
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { RabbitMQContainer } from '@testcontainers/rabbitmq';
-import { RedisContainer } from '@testcontainers/redis';
-import { Wait, StartedTestContainer } from 'testcontainers';
-import { MinioContainer } from '@testcontainers/minio';
 import request from 'supertest';
 
-describe('IntegrationWorker E2E (Testcontainers)', () => {
+describe('IntegrationWorker E2E (Docker Compose)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
   let s3Client: S3Client;
   let rabbitChannel: Channel;
   let rabbitConnection: ChannelModel;
   let redisClient: Redis;
-
-  let pgContainer: StartedTestContainer;
-  let rabbitContainer: StartedTestContainer;
-  let redisContainer: StartedTestContainer;
-  let minioContainer: StartedTestContainer;
-
-  let pgHost: string;
-  let pgPort: number;
-  let pgDatabase: string;
-  let pgUser: string;
-  let pgPassword: string;
 
   const TEST_TENANT_ID = 'test-tenant-001';
   const TEST_FILE_ID = 'test-file-e2e-001';
@@ -52,62 +36,34 @@ describe('IntegrationWorker E2E (Testcontainers)', () => {
     'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
   beforeAll(async () => {
-    // 1. Start Testcontainers
-    const pg = new PostgreSqlContainer('postgres:16-alpine')
-      .withDatabase('enterprise_db')
-      .withUsername('admin')
-      .withPassword('password');
-    const startedPg = await pg.start();
-    pgContainer = startedPg;
-    pgHost = startedPg.getHost();
-    pgPort = startedPg.getMappedPort(5432);
-    pgDatabase = 'enterprise_db';
-    pgUser = 'admin';
-    pgPassword = 'password';
-
-    const rabbit = new RabbitMQContainer('rabbitmq:3-management');
-    const startedRabbit = await rabbit.start();
-    rabbitContainer = startedRabbit;
-
-    const redis = new RedisContainer('redis:7-alpine');
-    const startedRedis = await redis.start();
-    redisContainer = startedRedis;
-
-    const minio = new MinioContainer('minio/minio:latest')
-      .withExposedPorts(9000)
-      .withWaitStrategy(Wait.forHttp('/minio/health/live', 9000));
-
-    const startedMinioResult = await minio.start();
-    minioContainer = startedMinioResult;
-    const startedMinio = startedMinioResult as StartedTestContainer;
-
-    // 2. Override process.env with dynamic container ports
-    process.env.DATABASE_URL = `postgresql://${pgUser}:${pgPassword}@${pgHost}:${pgPort}/${pgDatabase}`;
-    process.env.RABBITMQ_URL = `amqp://${startedRabbit.getHost()}:${startedRabbit.getMappedPort(5672)}`;
-    process.env.REDIS_HOST = startedRedis.getHost();
-    process.env.REDIS_PORT = startedRedis.getMappedPort(6379).toString();
+    // 1. Set static environment variables for localhost Docker Compose services
+    process.env.DATABASE_URL =
+      'postgresql://admin:password@localhost:5432/enterprise_db';
+    process.env.RABBITMQ_URL = 'amqp://localhost:5672';
+    process.env.REDIS_HOST = 'localhost';
+    process.env.REDIS_PORT = '6379';
     process.env.REDIS_PASSWORD = '';
     process.env.REDIS_DB = '0';
-    process.env.S3_ENDPOINT_URL = `http://${startedMinio.getHost()}:${startedMinio.getMappedPort(9000)}`;
+    process.env.S3_ENDPOINT_URL = 'http://localhost:9000';
     process.env.S3_REGION = 'us-east-1';
-    process.env.MINIO_ROOT_USER = 'minioadmin';
-    process.env.MINIO_ROOT_PASSWORD = 'minioadmin';
+    process.env.MINIO_ROOT_USER = 'admin';
+    process.env.MINIO_ROOT_PASSWORD = 'password';
     process.env.S3_BUCKET = 'transactions';
 
-    // 3. Initialize MinIO bucket
+    // 2. Initialize MinIO bucket
     s3Client = new S3Client({
       region: 'us-east-1',
       endpoint: process.env.S3_ENDPOINT_URL,
       credentials: {
-        accessKeyId: 'minioadmin',
-        secretAccessKey: 'minioadmin',
+        accessKeyId: 'admin',
+        secretAccessKey: 'password',
       },
       forcePathStyle: true,
     });
 
     await s3Client.send(new CreateBucketCommand({ Bucket: 'transactions' }));
 
-    // 4. Start NestJS application
+    // 3. Start NestJS application
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -174,8 +130,8 @@ describe('IntegrationWorker E2E (Testcontainers)', () => {
 
     // 7. Connect Redis for cleanup/verification
     redisClient = new Redis({
-      host: redisContainer.getHost(),
-      port: redisContainer.getMappedPort(6379),
+      host: 'localhost',
+      port: 6379,
     });
   }, 120_000);
 
@@ -207,12 +163,6 @@ describe('IntegrationWorker E2E (Testcontainers)', () => {
     if (s3Client) {
       s3Client.destroy();
     }
-
-    // 6. Stop containers
-    if (pgContainer) await pgContainer.stop();
-    if (rabbitContainer) await rabbitContainer.stop();
-    if (redisContainer) await redisContainer.stop();
-    if (minioContainer) await minioContainer.stop();
   }, 30_000);
 
   beforeEach(async () => {
@@ -373,7 +323,7 @@ describe('IntegrationWorker E2E (Testcontainers)', () => {
     }, 15_000);
   });
 
-  describe('Health Check (Testcontainers)', () => {
+  describe('Health Check (Docker Compose)', () => {
     interface ReadinessResponse {
       status: string;
       details?: {

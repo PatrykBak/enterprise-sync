@@ -50,51 +50,20 @@ export class AppService {
       this.logger.log(
         `Event successfully published to the broker for file: ${uploadedFile.fileId}`,
       );
-    } catch (publishError) {
-      await this.compensateFailedPublish(
-        uploadedFile.objectKey,
-        correlationId,
-        publishError,
+    } catch (error) {
+      this.logger.error(
+        `Failed to publish event for file ${uploadedFile.fileId}:`,
+        error,
+      );
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucketName,
+          Key: uploadedFile.objectKey,
+        }),
       );
 
       throw new ServiceUnavailableException(
         'System temporarily unavailable. File rejected.',
-      );
-    }
-  }
-
-  private async compensateFailedPublish(
-    objectKey: string,
-    correlationId: string,
-    publishError: unknown,
-  ): Promise<void> {
-    const compensationAttemptId = uuidv4();
-    const errorDetails =
-      publishError instanceof Error ? publishError.stack : String(publishError);
-
-    this.logger.error(
-      `[Compensation] Failed to publish event for file ${objectKey} (correlationId: ${correlationId}). ` +
-        `Initiating S3 object deletion. Compensation ID: ${compensationAttemptId}`,
-      errorDetails,
-    );
-
-    try {
-      await this.s3Client.send(
-        new DeleteObjectCommand({ Bucket: this.bucketName, Key: objectKey }),
-      );
-      this.logger.warn(
-        `[Compensation] Successfully deleted S3 object ${objectKey}. Compensation ID: ${compensationAttemptId}`,
-      );
-    } catch (compensationError) {
-      const compErrorDetails =
-        compensationError instanceof Error
-          ? compensationError.stack
-          : String(compensationError);
-
-      this.logger.error(
-        `[CRITICAL] COMPENSATION FAILED! Could not delete S3 object after a RabbitMQ publish failure. ` +
-          `Manual intervention required for key: ${objectKey}. Compensation ID: ${compensationAttemptId}`,
-        compErrorDetails,
       );
     }
   }
