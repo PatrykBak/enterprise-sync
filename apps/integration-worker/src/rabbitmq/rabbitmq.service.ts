@@ -267,9 +267,6 @@ export class RabbitMQConsumerService
 
       await this.transactionProcessor.processFileWithStream(
         payload.fileId,
-        payload.fileId,
-        bucket,
-        key,
         lines,
       );
 

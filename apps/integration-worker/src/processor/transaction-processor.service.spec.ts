@@ -61,9 +61,6 @@ describe('TransactionProcessorService', () => {
 
     await service.processFileWithStream(
       '00000000-0000-0000-0000-000000000001',
-      '00000000-0000-0000-0000-000000000001',
-      'bucket',
-      'key',
       Readable.from(validLines),
     );
 
@@ -96,9 +93,6 @@ describe('TransactionProcessorService', () => {
 
     await service.processFileWithStream(
       '00000000-0000-0000-0000-000000000001',
-      '00000000-0000-0000-0000-000000000001',
-      'bucket',
-      'key',
       Readable.from(mixedLines),
     );
 
@@ -138,9 +132,6 @@ describe('TransactionProcessorService', () => {
 
     await service.processFileWithStream(
       '00000000-0000-0000-0000-000000000001',
-      '00000000-0000-0000-0000-000000000001',
-      'bucket',
-      'key',
       Readable.from(lines),
     );
 

@@ -1,93 +1,32 @@
-import {
-  Module,
-  DynamicModule,
-  FactoryProvider,
-  ModuleMetadata,
-  InjectionToken,
-  Global,
-} from '@nestjs/common';
+import { Module, Global, Provider } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { REDIS_CLIENT } from './redis.constants';
 import { RedisLockService } from './redis-lock.service';
 
-export interface RedisModuleOptions {
-  host: string;
-  port: number;
-  password?: string;
-  db?: number;
-  retryMaxAttempts?: number;
-  retryMaxDelay?: number;
-}
-
-export type RedisModuleFactory = (
-  ...args: unknown[]
-) => Promise<RedisModuleOptions> | RedisModuleOptions;
-
-export interface RedisModuleAsyncOptions extends Pick<
-  ModuleMetadata,
-  'imports'
-> {
-  useFactory: RedisModuleFactory;
-  inject?: Array<InjectionToken>;
-}
-
-@Global()
-@Module({})
-export class RedisModule {
-  static register(options: RedisModuleOptions): DynamicModule {
-    const redisClientProvider: FactoryProvider<Redis> = {
-      provide: REDIS_CLIENT,
-      useFactory: (): Redis => {
-        return RedisModule.createRedisClient(options);
-      },
-    };
-
-    return {
-      module: RedisModule,
-      providers: [redisClientProvider, RedisLockService],
-      exports: [REDIS_CLIENT, RedisLockService],
-    };
-  }
-
-  static registerAsync(asyncOptions: RedisModuleAsyncOptions): DynamicModule {
-    const redisClientProvider: FactoryProvider<Redis> = {
-      provide: REDIS_CLIENT,
-      useFactory: async (...args: unknown[]): Promise<Redis> => {
-        const options = await asyncOptions.useFactory(...args);
-        return RedisModule.createRedisClient(options);
-      },
-      inject: asyncOptions.inject ?? [],
-    };
-
-    return {
-      module: RedisModule,
-      imports: asyncOptions.imports ?? [],
-      providers: [redisClientProvider, RedisLockService],
-      exports: [REDIS_CLIENT, RedisLockService],
-    };
-  }
-
-  private static createRedisClient(options: RedisModuleOptions): Redis {
-    const client = new Redis({
-      host: options.host,
-      port: options.port,
-      password: options.password,
-      db: options.db ?? 0,
+const redisClientProvider: Provider = {
+  provide: REDIS_CLIENT,
+  inject: [ConfigService],
+  useFactory: (configService: ConfigService): Redis => {
+    return new Redis({
+      host: configService.get<string>('REDIS_HOST', 'localhost'),
+      port: configService.get<number>('REDIS_PORT', 6379),
+      password: configService.get<string>('REDIS_PASSWORD'),
+      db: configService.get<number>('REDIS_DB', 0),
       retryStrategy: (times: number): number | void => {
-        if (times > (options.retryMaxAttempts ?? 10)) {
-          return undefined;
-        }
-        return Math.min(times * 100, options.retryMaxDelay ?? 3000);
+        if (times > 10) return undefined;
+        return Math.min(times * 100, 3000);
       },
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       lazyConnect: true,
     });
+  },
+};
 
-    client.on('error', (error: Error) => {
-      console.error('[Redis] Connection error:', error.message);
-    });
-
-    return client;
-  }
-}
+@Global()
+@Module({
+  providers: [redisClientProvider, RedisLockService],
+  exports: [REDIS_CLIENT, RedisLockService],
+})
+export class RedisModule {}

@@ -43,9 +43,6 @@ export class TransactionProcessorService {
 
   async processFileWithStream(
     jobId: string,
-    fileId: string,
-    bucket: string,
-    key: string,
     lines: AsyncIterable<string>,
   ): Promise<void> {
     const batchSize = this.configService.get<number>('BATCH_SIZE', 1000);

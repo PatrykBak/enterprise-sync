@@ -2,7 +2,7 @@
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { ClsModule } from 'nestjs-cls';
 import { DatabaseModule } from '../src/database/database.module';
 import { RabbitMQModule } from '../src/rabbitmq/rabbitmq.module';
@@ -36,7 +36,7 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
   const TEST_FILE_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'; // Poprawny UUID
   const TEST_CORRELATION_ID = 'corr-e2e-001';
   const TEST_EXPECTED_HASH =
-    'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   const TEST_BUCKET = 'transactions-bucket';
   const TEST_OBJECT_KEY = `transactions/${TEST_FILE_ID}/test-data.ndjson`;
 
@@ -82,21 +82,7 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         DatabaseModule,
         RabbitMQModule,
         HealthModule,
-        RedisModule.registerAsync({
-          imports: [ConfigModule],
-          useFactory: (...args: unknown[]) => {
-            const configService = args[0] as ConfigService;
-            return {
-              host: configService.get<string>('REDIS_HOST', 'localhost'),
-              port: configService.get<number>('REDIS_PORT', 6379),
-              password: configService.get<string>('REDIS_PASSWORD'),
-              db: configService.get<number>('REDIS_DB', 0),
-              retryMaxAttempts: 10,
-              retryMaxDelay: 3000,
-            };
-          },
-          inject: [ConfigService],
-        }),
+        RedisModule,
       ],
       controllers: [],
       providers: [AppLogger, S3ReaderService, TransactionProcessorService],

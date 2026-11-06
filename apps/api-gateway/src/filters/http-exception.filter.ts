@@ -4,76 +4,9 @@ import {
   ExceptionFilter,
   HttpException,
   Logger,
-  BadRequestException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { ValidationError } from 'class-validator';
 import { ClsService } from 'nestjs-cls';
-
-type ExceptionResponse = {
-  message: string | string[];
-  error?: string;
-  statusCode?: number;
-};
-
-type ValidationErrorResponse = {
-  statusCode: number;
-  message: string[];
-  error: string;
-};
-
-function isExceptionResponse(obj: unknown): obj is ExceptionResponse {
-  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
-    return false;
-  }
-  const record = obj as Record<string, unknown>;
-  const message = record['message'];
-  return typeof message === 'string' || Array.isArray(message);
-}
-
-function isValidationErrorResponse(
-  obj: unknown,
-): obj is ValidationErrorResponse {
-  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
-    return false;
-  }
-  const record = obj as Record<string, unknown>;
-  const message = record['message'];
-  return (
-    typeof record['error'] === 'string' &&
-    typeof record['statusCode'] === 'number' &&
-    Array.isArray(message) &&
-    message.every((item) => typeof item === 'string')
-  );
-}
-
-function formatValidationErrors(errors: ValidationError[]): string[] {
-  const messages: string[] = [];
-  for (const error of errors) {
-    if (error.constraints) {
-      messages.push(...Object.values(error.constraints));
-    }
-    if (error.children && error.children.length > 0) {
-      messages.push(...formatValidationErrors(error.children));
-    }
-  }
-  return messages;
-}
-
-function extractErrorMessage(
-  exceptionResponse: ExceptionResponse | ValidationErrorResponse,
-): string[] {
-  if (isValidationErrorResponse(exceptionResponse)) {
-    return exceptionResponse.message;
-  }
-
-  if (isExceptionResponse(exceptionResponse)) {
-    const message = exceptionResponse.message;
-    return Array.isArray(message) ? message : [message];
-  }
-
-  return ['An internal server error occurred'];
-}
 
 @Catch(HttpException)
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -102,23 +35,23 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const status = exception.getStatus();
     const exceptionResponse = exception.getResponse();
 
-    let errorMessage: string[] = ['An internal server error occurred'];
+    let errorMessages: string | string[] = 'An internal server error occurred';
 
-    if (
-      exception instanceof BadRequestException &&
-      Array.isArray(exceptionResponse)
+    if (typeof exceptionResponse === 'string') {
+      errorMessages = exceptionResponse;
+    } else if (
+      typeof exceptionResponse === 'object' &&
+      exceptionResponse !== null &&
+      'message' in exceptionResponse
     ) {
-      const validationErrors =
-        exceptionResponse as unknown as ValidationError[];
-      errorMessage = formatValidationErrors(validationErrors);
-    } else if (typeof exceptionResponse === 'string') {
-      errorMessage = [exceptionResponse];
-    } else if (isExceptionResponse(exceptionResponse)) {
-      errorMessage = extractErrorMessage(exceptionResponse);
+      const resMessage = (exceptionResponse as { message: unknown }).message;
+      errorMessages = Array.isArray(resMessage)
+        ? (resMessage as string[])
+        : String(resMessage);
     }
 
     const logMessage = `[${correlationId}] HTTP Status: ${status} Error: ${JSON.stringify(
-      errorMessage,
+      errorMessages,
     )}`;
 
     if (status >= 500) {
@@ -127,9 +60,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       this.logger.warn(logMessage);
     }
 
-    const errorForResponse = Array.isArray(errorMessage)
-      ? errorMessage.join(', ')
-      : errorMessage;
+    const errorForResponse = Array.isArray(errorMessages)
+      ? errorMessages.join(', ')
+      : errorMessages;
 
     response.status(status).json({
       statusCode: status,

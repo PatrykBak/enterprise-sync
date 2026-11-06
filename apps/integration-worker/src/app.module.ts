@@ -1,6 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import { ClsModule } from 'nestjs-cls';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
 import { AppLogger } from '@enterprise-sync/shared';
 import { RabbitMQModule } from './rabbitmq/rabbitmq.module';
@@ -27,21 +27,7 @@ class GlobalSharedModule {}
     GlobalSharedModule,
     DatabaseModule,
     S3Module,
-    RedisModule.registerAsync({
-      imports: [ConfigModule],
-      useFactory: (...args: unknown[]) => {
-        const configService = args[0] as ConfigService;
-        return {
-          host: configService.get<string>('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
-          password: configService.get<string>('REDIS_PASSWORD'),
-          db: configService.get<number>('REDIS_DB', 0),
-          retryMaxAttempts: 10,
-          retryMaxDelay: 3000,
-        };
-      },
-      inject: [ConfigService],
-    }),
+    RedisModule,
     RabbitMQModule,
     HealthModule,
   ],

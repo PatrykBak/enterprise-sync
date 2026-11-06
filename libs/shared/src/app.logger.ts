@@ -1,9 +1,4 @@
-import {
-  ConsoleLogger,
-  Injectable,
-  Optional,
-  type Type,
-} from "@nestjs/common";
+import { ConsoleLogger, Injectable, Optional } from "@nestjs/common";
 import { ClsService } from "nestjs-cls";
 
 @Injectable()
@@ -40,16 +35,6 @@ export class AppLogger extends ConsoleLogger {
       ? `[Correlation-ID: ${correlationId}] ${message}`
       : message;
     super.warn(formattedMessage, context);
-  }
-
-  static forContext(context: string): Type<AppLogger> {
-    @Injectable()
-    class ContextLogger extends AppLogger {
-      constructor(clsService: ClsService<Record<string, unknown>>) {
-        super(clsService, context);
-      }
-    }
-    return ContextLogger as Type<AppLogger>;
   }
 
   private getCorrelationId(): string | undefined {
