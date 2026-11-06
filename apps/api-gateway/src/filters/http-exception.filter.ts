@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ValidationError } from 'class-validator';
+import { ClsService } from 'nestjs-cls';
 
 type ExceptionResponse = {
   message: string | string[];
@@ -78,15 +79,20 @@ function extractErrorMessage(
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
 
+  constructor(
+    private readonly clsService: ClsService<Record<string, unknown>>,
+  ) {}
+
   catch(exception: HttpException, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
     const correlationId =
-      typeof request.headers['x-correlation-id'] === 'string'
+      this.clsService.get<string>('correlationId') ||
+      (typeof request.headers['x-correlation-id'] === 'string'
         ? request.headers['x-correlation-id']
-        : 'not-provided';
+        : 'not-provided');
 
     const tenantId =
       typeof request.headers['x-tenant-id'] === 'string'

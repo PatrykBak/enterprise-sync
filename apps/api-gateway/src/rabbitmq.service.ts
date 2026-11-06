@@ -55,6 +55,10 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  isConnected(): boolean {
+    return !!this.connection && !!this.channel && !this.isConnecting;
+  }
+
   private async connectWithRetry(): Promise<void> {
     const user = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_USER');
     const pass = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_PASS');

@@ -88,7 +88,10 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
       );
     }
 
-    return expectedHash;
+    return expectedHash
+      .trim()
+      .toLowerCase()
+      .replace(/^sha256:/, '');
   }
 
   private async processUpload(
@@ -108,10 +111,10 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
       const abortUpload = () => {
         uploadTask
           ?.abort()
-          .catch((e) =>
+          .catch((e: unknown) =>
             this.logger.error(
               `Failed to abort S3 upload task for key ${uploadObjectKey}`,
-              e,
+              e instanceof Error ? e.stack : String(e),
             ),
           );
       };
@@ -161,6 +164,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         });
 
         const uploadPromise = uploadTask.done();
+        uploadPromise.catch(() => {});
 
         const pipelinePromise = pipeline(
           fileStream,
@@ -205,7 +209,10 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
       });
 
       bb.on('error', (err: Error) => {
-        this.logger.error('Busboy parsing error. Terminating upload...', err);
+        this.logger.error(
+          'Busboy parsing error. Terminating upload...',
+          err.stack,
+        );
         abortUpload();
         reject(
           new InternalServerErrorException(
@@ -246,10 +253,12 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
               Key: uploadObjectKey,
             }),
           );
-        } catch (cleanupError) {
+        } catch (cleanupError: unknown) {
           this.logger.error(
             `Failed to delete corrupted S3 object for key ${uploadObjectKey}:`,
-            cleanupError,
+            cleanupError instanceof Error
+              ? cleanupError.stack
+              : String(cleanupError),
           );
         }
 
@@ -270,10 +279,10 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
       };
 
       resolve(result);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Streaming or upload failed for key ${uploadObjectKey}. Aborting.`,
-        error,
+        error instanceof Error ? error.stack : String(error),
       );
       await uploadTask?.abort();
       const errorMessage =

@@ -2,7 +2,7 @@ import { Controller, Post, Body, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { IsNotEmpty, IsString } from 'class-validator';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import type { JwtPayload } from './jwt.strategy';
 
 export class LoginDto {
@@ -28,13 +28,10 @@ export class AuthController {
     const expectedSecret =
       this.configService.get<string>('DEV_SECRET_TOKEN') || 'dev-secret-token';
 
-    const secretBuf = Buffer.from(clientSecret);
-    const expectedBuf = Buffer.from(expectedSecret);
+    const secretHash = createHash('sha256').update(clientSecret).digest();
+    const expectedHash = createHash('sha256').update(expectedSecret).digest();
 
-    if (
-      secretBuf.length !== expectedBuf.length ||
-      !timingSafeEqual(secretBuf, expectedBuf)
-    ) {
+    if (!timingSafeEqual(secretHash, expectedHash)) {
       throw new UnauthorizedException('Invalid client credentials');
     }
 

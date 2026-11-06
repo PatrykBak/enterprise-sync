@@ -52,10 +52,10 @@ export class AppService {
       this.logger.log(
         `Event successfully published to the broker for file: ${uploadedFile.fileId}`,
       );
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to publish event for file ${uploadedFile.fileId}:`,
-        error,
+        error instanceof Error ? error.stack : String(error),
       );
 
       try {
@@ -65,10 +65,10 @@ export class AppService {
             Key: uploadedFile.objectKey,
           }),
         );
-      } catch (s3Error) {
+      } catch (s3Error: unknown) {
         this.logger.error(
           `Failed to delete S3 file ${uploadedFile.objectKey} during rollback:`,
-          s3Error,
+          s3Error instanceof Error ? s3Error.stack : String(s3Error),
         );
       }
 
