@@ -45,9 +45,9 @@ wait_for_healthy_service "minio"
 
 echo "Infrastructure is up and running."
 
-echo "Applying Prisma migrations..."
+echo "Applying Prisma schema..."
 pnpm --filter "integration-worker" prisma:generate
-pnpm --filter "integration-worker" prisma:migrate
+pnpm --filter "integration-worker" exec prisma db push --skip-generate
 
 echo "Starting api-gateway and integration-worker in parallel..."
 pnpm --parallel --filter "api-gateway" --filter "integration-worker" start:dev
