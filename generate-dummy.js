@@ -24,7 +24,7 @@ async function* generateData(targetBytes) {
     const record =
       JSON.stringify({
         transactionId: `tx-${index}`,
-        amount: +(Math.random() * 1000).toFixed(2),
+        amount: (Math.random() * 1000 + 0.01).toFixed(2),
         currency: "USD",
         senderName: `Sender ${index}`,
         receiverName: `Receiver ${index}`,

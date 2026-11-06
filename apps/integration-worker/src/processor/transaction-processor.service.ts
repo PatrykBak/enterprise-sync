@@ -8,11 +8,19 @@ import { z } from 'zod';
 export const RawTransactionSchema = z.object({
   transactionId: z.string().min(1),
   amount: z
-    .union([
-      z.string().regex(/^-?\d+(\.\d{1,2})?$/, 'Invalid decimal format'),
-      z.number(),
-    ])
-    .transform((val) => String(val)),
+    .union([z.string().trim(), z.number()])
+    .transform((val) => (typeof val === 'number' ? val.toFixed(2) : val))
+    .pipe(
+      z
+        .string()
+        .regex(
+          /^\d+(\.\d{1,2})?$/,
+          'Amount must be a positive decimal with up to 2 decimal places',
+        )
+        .refine((val) => parseFloat(val) > 0, {
+          message: 'Amount must be greater than zero',
+        }),
+    ),
   currency: z.string().min(1),
   senderName: z.string().optional().default(''),
   receiverName: z.string().optional().default(''),

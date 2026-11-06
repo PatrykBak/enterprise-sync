@@ -90,6 +90,20 @@ export class RedisLockService implements OnModuleDestroy {
     }
   }
 
+  async releaseLock(tenantId: string, expectedHash: string): Promise<void> {
+    const key = `${LOCK_PREFIX}${tenantId}:${expectedHash}`;
+
+    try {
+      await this.redisClient.del(key);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.stack : String(error);
+      this.logger.error(
+        `Failed to release lock for tenant: ${tenantId}, hash: ${expectedHash}`,
+        errorMessage,
+      );
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.redisClient.quit();
   }

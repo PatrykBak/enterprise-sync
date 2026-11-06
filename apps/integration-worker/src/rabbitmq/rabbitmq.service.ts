@@ -6,6 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
 import { connect, Channel, ConsumeMessage, ChannelModel } from 'amqplib';
+import { z } from 'zod';
 import { Readable } from 'stream';
 import type { SyncJobPayload, RabbitMQStatus } from './rabbitmq.types';
 import type { LockResult } from '../redis/redis.types';
@@ -238,6 +239,12 @@ export class RabbitMQConsumerService
           this.channel!.nack(msg, false, true);
           return;
         }
+
+        this.logger.warn(
+          `[correlationId=${payload.correlationId}] Lock collision in unexpected state: ${lockResult.currentState}, routing to DLQ`,
+        );
+        this.channel!.nack(msg, false, false);
+        return;
       }
 
       await this.databaseService.updateJobStatus(
@@ -311,21 +318,7 @@ export class RabbitMQConsumerService
         }
 
         if (expectedHash && tenantId) {
-          try {
-            await this.redisLockService.updateLockStatus(
-              tenantId,
-              expectedHash,
-              'FAILED',
-            );
-          } catch (lockError: unknown) {
-            const lockErrorMessage =
-              lockError instanceof Error
-                ? lockError.message
-                : String(lockError);
-            this.logger.error(
-              `[correlationId=${correlationId}] Failed to update Redis lock status: ${lockErrorMessage}`,
-            );
-          }
+          await this.redisLockService.releaseLock(tenantId, expectedHash);
         }
 
         this.channel.nack(msg, false, false);
@@ -356,43 +349,23 @@ export class RabbitMQConsumerService
       throw new Error('Invalid JSON in message body');
     }
 
-    if (!parsed || typeof parsed !== 'object') {
-      throw new Error('Payload is not an object');
+    const payloadSchema = z.object({
+      fileId: z.string().uuid('fileId must be a valid UUID'),
+      objectKey: z.string().min(1, 'objectKey is required'),
+      bucket: z.string().optional(),
+      expectedHash: z.string().min(1, 'expectedHash is required'),
+      correlationId: z.string().min(1, 'correlationId is required'),
+      tenantId: z.string().min(1, 'tenantId is required'),
+      messageId: z.string().optional(),
+    });
+
+    const result = payloadSchema.safeParse(parsed);
+    if (!result.success) {
+      const issues = result.error.issues.map((i) => i.message).join(', ');
+      throw new Error(`Missing or invalid payload properties: ${issues}`);
     }
 
-    const obj = parsed as Record<string, unknown>;
-
-    if (typeof obj.fileId !== 'string' || obj.fileId.length === 0) {
-      throw new Error('Missing or invalid fileId');
-    }
-
-    if (typeof obj.expectedHash !== 'string' || obj.expectedHash.length === 0) {
-      throw new Error('Missing or invalid expectedHash');
-    }
-
-    if (
-      typeof obj.correlationId !== 'string' ||
-      obj.correlationId.length === 0
-    ) {
-      throw new Error('Missing or invalid correlationId');
-    }
-
-    if (typeof obj.tenantId !== 'string' || obj.tenantId.length === 0) {
-      throw new Error('Missing or invalid tenantId');
-    }
-
-    if (typeof obj.objectKey !== 'string' || obj.objectKey.length === 0) {
-      throw new Error('Missing or invalid objectKey');
-    }
-
-    return {
-      fileId: obj.fileId,
-      objectKey: obj.objectKey,
-      bucket: typeof obj.bucket === 'string' ? obj.bucket : undefined,
-      expectedHash: obj.expectedHash,
-      correlationId: obj.correlationId,
-      tenantId: obj.tenantId,
-    };
+    return result.data;
   }
 
   private isFatalError(error: unknown): boolean {
