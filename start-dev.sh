@@ -47,7 +47,10 @@ echo "Infrastructure is up and running."
 
 echo "Applying Prisma schema..."
 pnpm --filter "integration-worker" prisma:generate
-pnpm --filter "integration-worker" exec prisma db push --skip-generate
+pnpm --filter "integration-worker" prisma:push
 
-echo "Starting api-gateway and integration-worker in parallel..."
-pnpm --parallel --filter "api-gateway" --filter "integration-worker" start:dev
+echo "Building shared library..."
+pnpm --filter "@enterprise-sync/shared" build
+
+echo "Starting shared watcher, api-gateway and integration-worker in parallel..."
+pnpm --parallel --filter "@enterprise-sync/shared" --filter "api-gateway" --filter "integration-worker" start:dev

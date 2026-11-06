@@ -7,7 +7,7 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import Redis from 'ioredis';
 import { RabbitMQService } from './rabbitmq.service';
-import { THROTTLER_REDIS_CLIENT } from './app.module';
+import { THROTTLER_REDIS_CLIENT } from './throttler-redis.constants';
 
 @Controller('health')
 export class HealthController {

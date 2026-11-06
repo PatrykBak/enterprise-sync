@@ -17,8 +17,7 @@ import { RabbitMQModule } from './rabbitmq.module';
 import { HttpExceptionFilter } from './filters/http-exception.filter';
 import { AppLogger } from '@enterprise-sync/shared';
 import { AuthModule } from './auth/auth.module';
-
-export const THROTTLER_REDIS_CLIENT = 'THROTTLER_REDIS_CLIENT';
+import { THROTTLER_REDIS_CLIENT } from './throttler-redis.constants';
 
 const throttlerRedisProvider: Provider = {
   provide: THROTTLER_REDIS_CLIENT,

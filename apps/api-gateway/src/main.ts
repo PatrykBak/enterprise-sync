@@ -5,9 +5,7 @@ import { AppLogger } from '@enterprise-sync/shared';
 import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
-    logger: false,
-  });
+  const app = await NestFactory.create(AppModule);
   const logger = app.get(AppLogger);
   app.useLogger(logger);
   app.enableShutdownHooks();
