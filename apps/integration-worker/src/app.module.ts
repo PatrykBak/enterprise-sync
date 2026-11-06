@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { ClsModule } from 'nestjs-cls';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
@@ -7,7 +7,13 @@ import { RabbitMQModule } from './rabbitmq/rabbitmq.module';
 import { HealthModule } from './health/health.module';
 import { RedisModule } from './redis/redis.module';
 import { S3Module } from './s3/s3.module';
-import { TransactionProcessorService } from './processor/transaction-processor.service';
+
+@Global()
+@Module({
+  providers: [AppLogger],
+  exports: [AppLogger],
+})
+class GlobalSharedModule {}
 
 @Module({
   imports: [
@@ -18,9 +24,9 @@ import { TransactionProcessorService } from './processor/transaction-processor.s
     ClsModule.forRoot({
       global: true,
     }),
+    GlobalSharedModule,
     DatabaseModule,
-    RabbitMQModule,
-    HealthModule,
+    S3Module,
     RedisModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (...args: unknown[]) => {
@@ -36,9 +42,10 @@ import { TransactionProcessorService } from './processor/transaction-processor.s
       },
       inject: [ConfigService],
     }),
-    S3Module,
+    RabbitMQModule,
+    HealthModule,
   ],
   controllers: [],
-  providers: [AppLogger, TransactionProcessorService],
+  providers: [],
 })
 export class AppModule {}

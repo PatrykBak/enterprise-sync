@@ -4,6 +4,7 @@ import {
   FactoryProvider,
   ModuleMetadata,
   InjectionToken,
+  Global,
 } from '@nestjs/common';
 import Redis from 'ioredis';
 import { REDIS_CLIENT } from './redis.constants';
@@ -30,6 +31,7 @@ export interface RedisModuleAsyncOptions extends Pick<
   inject?: Array<InjectionToken>;
 }
 
+@Global()
 @Module({})
 export class RedisModule {
   static register(options: RedisModuleOptions): DynamicModule {
@@ -43,7 +45,7 @@ export class RedisModule {
     return {
       module: RedisModule,
       providers: [redisClientProvider, RedisLockService],
-      exports: [RedisLockService],
+      exports: [REDIS_CLIENT, RedisLockService],
     };
   }
 
@@ -61,7 +63,7 @@ export class RedisModule {
       module: RedisModule,
       imports: asyncOptions.imports ?? [],
       providers: [redisClientProvider, RedisLockService],
-      exports: [RedisLockService],
+      exports: [REDIS_CLIENT, RedisLockService],
     };
   }
 
