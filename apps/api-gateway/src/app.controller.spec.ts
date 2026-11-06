@@ -7,10 +7,12 @@ import { ClsService } from 'nestjs-cls';
 import { ConfigService } from '@nestjs/config';
 import { RabbitMQService } from './rabbitmq.service';
 import { S3_CLIENT_TOKEN } from './s3.module';
+import { BadRequestException } from '@nestjs/common';
+import type { S3UploadResult } from './s3-upload-result.interface';
 
 describe('AppController', () => {
   let appController: AppController;
-  let appService: AppService;
+  let appService: jest.Mocked<AppService>;
 
   beforeEach(async () => {
     const mockClsService = {
@@ -32,6 +34,7 @@ describe('AppController', () => {
 
     const mockRabbitMQService = {
       publish: jest.fn().mockResolvedValue(undefined),
+      isConnected: jest.fn().mockReturnValue(true),
     };
 
     const app: TestingModule = await Test.createTestingModule({
@@ -46,11 +49,62 @@ describe('AppController', () => {
     }).compile();
 
     appController = app.get<AppController>(AppController);
-    appService = app.get<AppService>(AppService);
+    appService = app.get(AppService);
   });
 
   it('should be defined', () => {
     expect(appController).toBeDefined();
     expect(appService).toBeDefined();
+  });
+
+  it('should throw BadRequestException if file was not uploaded', async () => {
+    await expect(
+      appController.syncTransactions(
+        undefined as unknown as S3UploadResult,
+        'sha256-hash',
+        'tenant-1',
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('should throw BadRequestException if x-expected-hash header is missing', async () => {
+    const mockFile: S3UploadResult = {
+      status: 'accepted',
+      fileId: 'file-123',
+      sha256: 'hash-123',
+      message: 'File accepted',
+      objectKey: 'transactions/file-123/file.ndjson',
+    };
+
+    await expect(
+      appController.syncTransactions(mockFile, undefined, 'tenant-1'),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('should delegate to appService when payload is valid', async () => {
+    const mockFile: S3UploadResult = {
+      status: 'accepted',
+      fileId: 'file-123',
+      sha256: 'hash-123',
+      message: 'File accepted',
+      objectKey: 'transactions/file-123/file.ndjson',
+    };
+
+    const result = await appController.syncTransactions(
+      mockFile,
+      'valid-hash',
+      'tenant-1',
+    );
+
+    expect(result).toEqual({
+      status: 'accepted',
+      correlationId: 'test-correlation-id',
+    });
+    expect(appService.processSyncTransaction.mock.calls[0]).toEqual([
+      mockFile,
+      'valid-hash',
+      'test-correlation-id',
+      'tenant-1',
+    ]);
   });
 });

@@ -1,62 +1,48 @@
-## Description
+# API Gateway
 
-API Gateway for the Enterprise Sync system. This service is the main entry point for data synchronization. Its primary responsibilities include:
-- Authenticating and authorizing incoming requests.
-- Handling large file uploads by streaming them directly to an S3-compatible object storage (MinIO) to minimize memory usage.
-- Verifying file integrity using SHA256 checksums.
-- Publishing events to a RabbitMQ message broker to trigger asynchronous processing by worker services.
+API Gateway for the Enterprise Sync system. This service is the primary entry point for transaction data synchronization.
 
-## Testing the Sync Transactions Endpoint (Large File Streaming)
+## Responsibilities
+- Authenticating and authorizing requests via JWT with RBAC (`admin`).
+- Streaming large file uploads directly to MinIO (S3-compatible storage) using Busboy with constant memory usage.
+- Verifying file integrity via streaming SHA-256 calculation.
+- Publishing synchronization events to RabbitMQ topic exchange (`integration.events`).
+- Exposing Liveness and Readiness probes for Kubernetes.
 
-To test the large file streaming endpoint (`POST /api/sync-transactions`), which features efficient, low-memory streaming, follow these steps:
+## Running Locally
 
-### 1. Start the Development Environment
-From the root of the project, run the main infrastructure script. This will start all required Docker containers (MinIO, Postgres, RabbitMQ) and the API Gateway server:
 ```bash
-$ bash start-dev.sh
+# Start infrastructure and both services
+bash start-dev.sh
 ```
 
-### 2. Prepare the MinIO Bucket
-Before uploading, the target bucket must exist in the Object Storage:
-1. Open the MinIO Console in your browser: `http://localhost:9001`
-2. Log in with the credentials defined in your `.env` file (default: `admin` / `password`).
-3. Navigate to **Buckets** and create a new bucket named `transactions-bucket`.
+## Testing File Upload Pipeline
 
-### 3. Generate a Dummy Payload
-Generate a large test NDJSON file (e.g., 2000MB) using the utility script. The script will also calculate the file's SHA256 hash and print the complete `curl` command required for the next step.
+### 1. Obtain JWT Access Token:
+
 ```bash
-$ node generate-dummy.js
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"clientId":"admin-client","clientSecret":"dev-secret-token"}'
 ```
 
-### 4. Execute the Test Request
-Copy the `curl` command that was printed to your console in the previous step and execute it. It includes all required headers for authentication, correlation, tenancy, and integrity verification.
+### 2. Generate Dummy NDJSON File:
 
-The command will look similar to the one below:
 ```bash
-$ curl -X POST http://localhost:3000/api/sync-transactions \
-  -H "Authorization: Bearer dev-secret-token" \
+node generate-dummy.js
+```
+
+### 3. Execute Sync Request:
+
+```bash
+curl -X POST http://localhost:3000/api/sync-transactions \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
   -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \
   -H "X-Tenant-ID: test-tenant-1" \
-  -H "X-Expected-Hash: 9670671415ff6efe81b936aedca641c519ad0c1399ad745e98d707f145e841c3" \
+  -H "X-Expected-Hash: <SHA256_HASH>" \
   -F "file=@dummy-2000mb.ndjson;type=application/x-ndjson"
 ```
 
-## Project setup
-
-```bash
-$ pnpm install
-```
-
-## Compile and run the project
-
-```bash
-# development
-$ pnpm run start
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ pnpm run test
-```
+## Health Probes
+- `GET /health/liveness` — Verifies HTTP server availability.
+- `GET /health/readiness` — Verifies connections to RabbitMQ and Redis.

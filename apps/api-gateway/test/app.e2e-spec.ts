@@ -7,13 +7,23 @@ import { AppModule } from './../src/app.module';
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
+    process.env.JWT_SECRET = 'super-secret-jwt-key-dev';
+    process.env.DEV_SECRET_TOKEN = 'dev-secret-token';
+    process.env.S3_BUCKET_NAME = 'transactions-bucket';
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();
+  });
+
+  afterAll(async () => {
+    if (app) {
+      await app.close();
+    }
   });
 
   it('/health/liveness (GET)', () => {
