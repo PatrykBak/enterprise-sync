@@ -8,4 +8,13 @@ export class HealthController {
   checkLiveness(): { status: string } {
     return { status: 'ok' };
   }
+
+  @Get('readiness')
+  @SkipThrottle()
+  checkReadiness(): { status: string; timestamp: string } {
+    return {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+    };
+  }
 }

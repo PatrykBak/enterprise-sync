@@ -49,10 +49,27 @@ export class DatabaseService
     fileId: string,
     status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED',
   ): Promise<void> {
-    await this.integrationJob.upsert({
-      where: { id: jobId },
-      update: { status },
-      create: { id: jobId, fileId, status },
-    });
+    try {
+      const existing = await this.integrationJob.findUnique({
+        where: { id: jobId },
+      });
+
+      if (existing?.status === 'COMPLETED' && status === 'PROCESSING') {
+        return;
+      }
+
+      await this.integrationJob.upsert({
+        where: { id: jobId },
+        update: { status },
+        create: { id: jobId, fileId, status },
+      });
+    } catch {
+      // Fallback jeśli jobId nie jest poprawnym formatem UUID w PostgreSQL
+      await this.integrationJob.upsert({
+        where: { fileId },
+        update: { status },
+        create: { fileId, status },
+      });
+    }
   }
 }

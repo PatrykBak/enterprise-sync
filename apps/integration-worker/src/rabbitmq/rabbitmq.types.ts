@@ -2,6 +2,8 @@ import type { ConsumeMessage } from 'amqplib';
 
 export interface SyncJobPayload {
   fileId: string;
+  objectKey: string;
+  bucket?: string;
   expectedHash: string;
   correlationId: string;
   tenantId: string;

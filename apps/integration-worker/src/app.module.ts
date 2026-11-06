@@ -1,10 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ClsModule } from 'nestjs-cls';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
-import { AppLogger } from './app.logger';
+import { AppLogger } from '@enterprise-sync/shared';
 import { RabbitMQModule } from './rabbitmq/rabbitmq.module';
 import { HealthModule } from './health/health.module';
 import { RedisModule } from './redis/redis.module';
@@ -40,7 +38,7 @@ import { TransactionProcessorService } from './processor/transaction-processor.s
     }),
     S3Module,
   ],
-  controllers: [AppController],
-  providers: [AppService, AppLogger, TransactionProcessorService],
+  controllers: [],
+  providers: [AppLogger, TransactionProcessorService],
 })
 export class AppModule {}

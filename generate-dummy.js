@@ -26,6 +26,10 @@ async function* generateData(targetBytes) {
         transactionId: `tx-${index}`,
         amount: +(Math.random() * 1000).toFixed(2),
         currency: "USD",
+        senderName: `Sender ${index}`,
+        receiverName: `Receiver ${index}`,
+        senderAccount: `PL12345678901234567890${String(index).padStart(4, '0')}`,
+        receiverAccount: `PL98765432109876543210${String(index).padStart(4, '0')}`,
         timestamp: simulatedDate.toISOString(),
       }) + "\n";
 
@@ -53,17 +57,15 @@ async function run() {
 
     const fileHash = hasher.digest("hex");
     console.log(`[Hash] SHA256: ${fileHash}\n`);
-    console.log(`Use the following curl command to test the upload:`);
+    console.log(`1. Pobierz token JWT:`);
+    console.log(`curl -X POST http://localhost:3000/auth/login -H "Content-Type: application/json" -d '{"clientId":"admin-client","clientSecret":"dev-secret-token"}'\n`);
+    console.log(`2. Wyślij plik za pomocą otrzymanego <ACCESS_TOKEN>:`);
     console.log(`curl -X POST http://localhost:3000/api/sync-transactions \\`);
-    console.log(`  -H "Authorization: Bearer dev-secret-token" \\`);
-    console.log(
-      `  -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \\`,
-    );
+    console.log(`  -H "Authorization: Bearer <ACCESS_TOKEN>" \\`);
+    console.log(`  -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \\`);
     console.log(`  -H "X-Tenant-ID: test-tenant-1" \\`);
     console.log(`  -H "X-Expected-Hash: ${fileHash}" \\`);
-    console.log(
-      `  -F "file=@dummy-${SIZE_IN_MB}mb.ndjson;type=application/x-ndjson"`,
-    );
+    console.log(`  -F "file=@dummy-${SIZE_IN_MB}mb.ndjson;type=application/x-ndjson"`);
   } catch (err) {
     console.error("[Error] Pipeline failed during execution:", err.message);
   }

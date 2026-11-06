@@ -39,10 +39,15 @@ wait_for_healthy_service() {
 }
 
 wait_for_healthy_service "postgres"
+wait_for_healthy_service "redis"
 wait_for_healthy_service "rabbitmq"
 wait_for_healthy_service "minio"
 
 echo "Infrastructure is up and running."
-echo "Starting api-gateway in development mode..."
 
-pnpm --filter "api-gateway" start:dev
+echo "Applying Prisma migrations..."
+pnpm --filter "integration-worker" prisma:generate
+pnpm --filter "integration-worker" prisma:migrate
+
+echo "Starting api-gateway and integration-worker in parallel..."
+pnpm --parallel --filter "api-gateway" --filter "integration-worker" start:dev

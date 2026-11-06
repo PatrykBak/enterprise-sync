@@ -35,7 +35,7 @@ export class AppController {
   async syncTransactions(
     @UploadedS3File() uploadedFile: S3UploadResult,
     @Headers('x-expected-hash') expectedHash: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-tenant-id') tenantId: string,
   ): Promise<{ status: 'accepted'; correlationId: string }> {
     if (!uploadedFile) {
       throw new BadRequestException({
@@ -44,15 +44,12 @@ export class AppController {
       });
     }
 
-    if (!expectedHash || !tenantId) {
+    if (!expectedHash) {
       const currentCorrelationId =
         this.clsService.get<string>('correlationId') ?? 'unknown';
       throw new BadRequestException({
         message: 'Missing required headers',
-        missing: [
-          ...(!expectedHash ? ['x-expected-hash'] : []),
-          ...(!tenantId ? ['x-tenant-id'] : []),
-        ],
+        missing: ['x-expected-hash'],
         correlationId: currentCorrelationId,
       });
     }

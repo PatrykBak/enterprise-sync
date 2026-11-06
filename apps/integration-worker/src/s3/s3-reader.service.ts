@@ -33,38 +33,6 @@ export class S3ReaderService implements OnModuleInit {
     });
   }
 
-  async *readLines(bucket: string, key: string): AsyncIterable<string> {
-    const input: GetObjectCommandInput = {
-      Bucket: bucket,
-      Key: key,
-    };
-
-    const command = new GetObjectCommand(input);
-    const response = await this.s3Client.send(command);
-
-    const body = response.Body;
-
-    if (!(body instanceof Readable)) {
-      throw new Error('Expected response body to be a Readable stream');
-    }
-
-    const rl = readline.createInterface({
-      input: body,
-      crlfDelay: Infinity,
-    });
-
-    try {
-      for await (const line of rl) {
-        if (line.trim().length === 0) {
-          continue;
-        }
-        yield line;
-      }
-    } finally {
-      body.destroy();
-    }
-  }
-
   async getStream(
     bucket: string,
     key: string,
@@ -103,23 +71,5 @@ export class S3ReaderService implements OnModuleInit {
       })(),
       stream: body,
     };
-  }
-
-  async getFileStream(bucket: string, key: string): Promise<Readable> {
-    const input: GetObjectCommandInput = {
-      Bucket: bucket,
-      Key: key,
-    };
-
-    const command = new GetObjectCommand(input);
-    const response = await this.s3Client.send(command);
-
-    const body = response.Body;
-
-    if (!(body instanceof Readable)) {
-      throw new Error('Expected response body to be a Readable stream');
-    }
-
-    return body;
   }
 }

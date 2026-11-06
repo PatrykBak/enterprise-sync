@@ -16,6 +16,9 @@
     "incremental": true,
     "skipLibCheck": true,
     "strict": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@enterprise-sync/shared": ["../../libs/shared/src/index.ts"]
+    }
   }
 }

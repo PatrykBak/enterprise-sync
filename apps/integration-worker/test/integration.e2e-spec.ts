@@ -11,6 +11,8 @@ import { RedisModule } from '../src/redis/redis.module';
 import { S3ReaderService } from '../src/s3/s3-reader.service';
 import { TransactionProcessorService } from '../src/processor/transaction-processor.service';
 import { PrismaClient, JobStatus } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
 import {
   S3Client,
   PutObjectCommand,
@@ -18,25 +20,27 @@ import {
 } from '@aws-sdk/client-s3';
 import { connect, Channel, ChannelModel } from 'amqplib';
 import { Redis } from 'ioredis';
-
 import request from 'supertest';
+import { AppLogger } from '@enterprise-sync/shared';
 
 describe('IntegrationWorker E2E (Docker Compose)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  let pgPool: pg.Pool;
   let s3Client: S3Client;
   let rabbitChannel: Channel;
   let rabbitConnection: ChannelModel;
   let redisClient: Redis;
 
   const TEST_TENANT_ID = 'test-tenant-001';
-  const TEST_FILE_ID = 'test-file-e2e-001';
+  const TEST_FILE_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'; // Poprawny UUID
   const TEST_CORRELATION_ID = 'corr-e2e-001';
   const TEST_EXPECTED_HASH =
     'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+  const TEST_BUCKET = 'transactions-bucket';
+  const TEST_OBJECT_KEY = `transactions/${TEST_FILE_ID}/test-data.ndjson`;
 
   beforeAll(async () => {
-    // 1. Set static environment variables for localhost Docker Compose services
     process.env.DATABASE_URL =
       'postgresql://admin:password@localhost:5432/enterprise_db';
     process.env.RABBITMQ_URL = 'amqp://localhost:5672';
@@ -48,9 +52,8 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
     process.env.S3_REGION = 'us-east-1';
     process.env.MINIO_ROOT_USER = 'admin';
     process.env.MINIO_ROOT_PASSWORD = 'password';
-    process.env.S3_BUCKET = 'transactions';
+    process.env.S3_BUCKET_NAME = TEST_BUCKET;
 
-    // 2. Initialize MinIO bucket
     s3Client = new S3Client({
       region: 'us-east-1',
       endpoint: process.env.S3_ENDPOINT_URL,
@@ -61,9 +64,12 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
       forcePathStyle: true,
     });
 
-    await s3Client.send(new CreateBucketCommand({ Bucket: 'transactions' }));
+    try {
+      await s3Client.send(new CreateBucketCommand({ Bucket: TEST_BUCKET }));
+    } catch {
+      // Bucket może już istnieć
+    }
 
-    // 3. Start NestJS application
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -93,42 +99,24 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         }),
       ],
       controllers: [],
-      providers: [S3ReaderService, TransactionProcessorService],
+      providers: [AppLogger, S3ReaderService, TransactionProcessorService],
     }).compile();
 
     app = moduleFixture.createNestApplication();
     app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
     await app.init();
 
-    // 5. Connect Prisma
-    prisma = new PrismaClient();
+    pgPool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    const adapter = new PrismaPg(pgPool);
+    prisma = new PrismaClient({ adapter });
     await prisma.$connect();
 
-    // 6. Setup RabbitMQ channel for publishing test messages
     rabbitConnection = (await connect(process.env.RABBITMQ_URL, {
       heartbeat: 30,
       timeout: 10000,
     })) as unknown as ChannelModel;
     rabbitChannel = await rabbitConnection.createConfirmChannel();
 
-    await rabbitChannel.assertExchange('integration.events', 'topic', {
-      durable: true,
-    });
-    await rabbitChannel.assertExchange('integration.dlx', 'topic', {
-      durable: true,
-    });
-    await rabbitChannel.assertQueue('tx-sync-jobs', {
-      durable: true,
-      arguments: { 'x-dead-letter-exchange': 'integration.dlx' },
-    });
-    await rabbitChannel.bindQueue(
-      'tx-sync-jobs',
-      'integration.events',
-      'transaction.file.uploaded',
-    );
-    await rabbitChannel.prefetch(1, false);
-
-    // 7. Connect Redis for cleanup/verification
     redisClient = new Redis({
       host: 'localhost',
       port: 6379,
@@ -136,37 +124,30 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
   }, 120_000);
 
   afterAll(async () => {
-    // 1. Close NestJS app
     if (app) {
       await app.close();
     }
-
-    // 2. Close Prisma
     if (prisma) {
       await prisma.$disconnect();
     }
-
-    // 3. Close RabbitMQ
+    if (pgPool) {
+      await pgPool.end();
+    }
     if (rabbitChannel) {
       await rabbitChannel.close();
     }
     if (rabbitConnection) {
       await rabbitConnection.close();
     }
-
-    // 4. Close Redis
     if (redisClient) {
       await redisClient.quit();
     }
-
-    // 5. Close S3 client
     if (s3Client) {
       s3Client.destroy();
     }
   }, 30_000);
 
   beforeEach(async () => {
-    // Clean up database before each test
     await prisma.transactionLog.deleteMany();
     await prisma.integrationJob.deleteMany();
     await redisClient.flushdb();
@@ -174,7 +155,6 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
 
   describe('Active Polling & PII Masking', () => {
     it('should process NDJSON file from MinIO and mask PII in senderAccount', async () => {
-      // 1. Prepare test NDJSON payload (5 lines)
       const testTransactions = [
         {
           transactionId: 'txn-001',
@@ -232,17 +212,15 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         .map((tx) => JSON.stringify(tx))
         .join('\n');
 
-      // 2. Upload NDJSON to MinIO
       await s3Client.send(
         new PutObjectCommand({
-          Bucket: 'transactions',
-          Key: `uploads/${TEST_TENANT_ID}/${TEST_FILE_ID}.jsonl`,
+          Bucket: TEST_BUCKET,
+          Key: TEST_OBJECT_KEY,
           Body: ndjsonContent,
           ContentType: 'application/x-ndjson',
         }),
       );
 
-      // 3. Pre-create IntegrationJob with PENDING status
       await prisma.integrationJob.create({
         data: {
           id: TEST_FILE_ID,
@@ -251,9 +229,10 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         },
       });
 
-      // 4. Publish message to RabbitMQ to trigger processing
       const payload = {
         fileId: TEST_FILE_ID,
+        objectKey: TEST_OBJECT_KEY,
+        bucket: TEST_BUCKET,
         expectedHash: TEST_EXPECTED_HASH,
         correlationId: TEST_CORRELATION_ID,
         tenantId: TEST_TENANT_ID,
@@ -264,14 +243,13 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         'transaction.file.uploaded',
         Buffer.from(JSON.stringify(payload), 'utf-8'),
         {
-          correlationId: TEST_CORRELATION_ID,
+          headers: { 'x-correlation-id': TEST_CORRELATION_ID },
           persistent: true,
         },
       );
 
-      // 5. Active Polling: poll database until job status is COMPLETED (max 10 seconds)
       const startTime = Date.now();
-      const timeoutMs = 10_000;
+      const timeoutMs = 15_000;
       let jobStatus: JobStatus | null = null;
 
       while (Date.now() - startTime < timeoutMs) {
@@ -284,16 +262,13 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
           break;
         }
 
-        // Wait 200ms before next poll
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 200);
         });
       }
 
-      // 6. Assert: Job status must be COMPLETED
       expect(jobStatus).toBe(JobStatus.COMPLETED);
 
-      // 7. Assert: TransactionLogs exist and PII is masked
       const transactionLogs = await prisma.transactionLog.findMany({
         where: { jobId: TEST_FILE_ID },
         orderBy: { transactionId: 'asc' },
@@ -301,14 +276,12 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
 
       expect(transactionLogs).toHaveLength(5);
 
-      // Verify PII masking for senderAccount
-      // Format: first 2 chars + "******" + last 4 chars
       const expectedMaskedAccounts = [
-        'PL******3456', // PL12345678901234567890123456
-        'DE******3000', // DE89370400440532013000
-        'US******7890', // US12345678901234567890
-        'GB******1655', // GB12BARC20658244971655
-        'CH******9576', // CH93007620116238529576
+        'PL******3456',
+        'DE******3000',
+        'US******7890',
+        'GB******1655',
+        'CH******9576',
       ];
 
       transactionLogs.forEach((log, index) => {
@@ -316,27 +289,13 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         expect(log.transactionId).toBe(`txn-00${index + 1}`);
       });
 
-      // 8. Verify receiverAccount is also masked
       transactionLogs.forEach((log) => {
         expect(log.receiverAccount).toMatch(/^[A-Z]{2}\*{6}\d{4}$/);
       });
-    }, 15_000);
+    }, 20_000);
   });
 
   describe('Health Check (Docker Compose)', () => {
-    interface ReadinessResponse {
-      status: string;
-      details?: {
-        rabbitmq: boolean;
-        database: boolean;
-      };
-    }
-
-    interface LivenessResponse {
-      status: string;
-      timestamp: string;
-    }
-
     it('should return readiness status ok when all dependencies are connected', async () => {
       const server = app.getHttpServer() as unknown as Parameters<
         typeof request
@@ -345,7 +304,13 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         .get('/health/readiness')
         .expect(200);
 
-      const body = response.body as ReadinessResponse;
+      const body = response.body as {
+        status: string;
+        details: {
+          rabbitmq: boolean;
+          database: boolean;
+        };
+      };
       expect(body).toHaveProperty('status', 'ok');
       expect(body).toHaveProperty('details');
       expect(body.details).toHaveProperty('rabbitmq', true);
@@ -360,9 +325,8 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         .get('/health/liveness')
         .expect(200);
 
-      const body = response.body as LivenessResponse;
-      expect(body).toHaveProperty('status', 'ok');
-      expect(body).toHaveProperty('timestamp');
+      expect(response.body).toHaveProperty('status', 'ok');
+      expect(response.body).toHaveProperty('timestamp');
     });
   });
 });

@@ -1,7 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
-import { AppLogger } from './app.logger';
+import { AppLogger } from '@enterprise-sync/shared';
+import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
@@ -10,6 +11,14 @@ async function bootstrap(): Promise<void> {
   const logger = app.get(AppLogger);
   app.useLogger(logger);
   app.enableShutdownHooks();
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
+
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') ?? 3000;
   await app.listen(port);

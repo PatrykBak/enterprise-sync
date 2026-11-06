@@ -1,4 +1,9 @@
-import { ConsoleLogger, Injectable, type Type } from "@nestjs/common";
+import {
+  ConsoleLogger,
+  Injectable,
+  Optional,
+  type Type,
+} from "@nestjs/common";
 import { ClsService } from "nestjs-cls";
 
 @Injectable()
@@ -7,34 +12,34 @@ export class AppLogger extends ConsoleLogger {
 
   constructor(
     clsService: ClsService<Record<string, unknown>>,
-    context: string = AppLogger.name,
+    @Optional() context: string = AppLogger.name,
   ) {
     super(context);
     this.clsService = clsService;
   }
 
-  log(message: string): void {
+  override log(message: string, context?: string): void {
     const correlationId = this.getCorrelationId();
     const formattedMessage = correlationId
       ? `[Correlation-ID: ${correlationId}] ${message}`
       : message;
-    super.log(formattedMessage);
+    super.log(formattedMessage, context);
   }
 
-  error(message: string, stack?: string): void {
+  override error(message: string, stack?: string, context?: string): void {
     const correlationId = this.getCorrelationId();
     const formattedMessage = correlationId
       ? `[Correlation-ID: ${correlationId}] ${message}`
       : message;
-    super.error(formattedMessage, stack);
+    super.error(formattedMessage, stack, context);
   }
 
-  warn(message: string): void {
+  override warn(message: string, context?: string): void {
     const correlationId = this.getCorrelationId();
     const formattedMessage = correlationId
       ? `[Correlation-ID: ${correlationId}] ${message}`
       : message;
-    super.warn(formattedMessage);
+    super.warn(formattedMessage, context);
   }
 
   static forContext(context: string): Type<AppLogger> {

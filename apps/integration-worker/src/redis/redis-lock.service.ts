@@ -7,7 +7,7 @@ import {
   FINALIZE_TTL_SECONDS,
 } from './redis.constants';
 import { LockResult } from './redis.types';
-import { AppLogger } from '../app.logger';
+import { AppLogger } from '@enterprise-sync/shared';
 
 @Injectable()
 export class RedisLockService implements OnModuleDestroy {
@@ -20,8 +20,11 @@ export class RedisLockService implements OnModuleDestroy {
     this.logger = logger;
   }
 
-  async acquireLock(expectedHash: string): Promise<LockResult> {
-    const key = `${LOCK_PREFIX}${expectedHash}`;
+  async acquireLock(
+    tenantId: string,
+    expectedHash: string,
+  ): Promise<LockResult> {
+    const key = `${LOCK_PREFIX}${tenantId}:${expectedHash}`;
 
     try {
       const result = await this.redisClient.set(
@@ -50,7 +53,7 @@ export class RedisLockService implements OnModuleDestroy {
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.stack : String(error);
       this.logger.error(
-        `Failed to acquire lock for ${expectedHash}`,
+        `Failed to acquire lock for tenant: ${tenantId}, hash: ${expectedHash}`,
         errorMessage,
       );
       throw error;
@@ -58,10 +61,11 @@ export class RedisLockService implements OnModuleDestroy {
   }
 
   async updateLockStatus(
+    tenantId: string,
     expectedHash: string,
     status: 'COMPLETED' | 'FAILED',
   ): Promise<void> {
-    const key = `${LOCK_PREFIX}${expectedHash}`;
+    const key = `${LOCK_PREFIX}${tenantId}:${expectedHash}`;
 
     try {
       const result = await this.redisClient.set(
@@ -73,13 +77,13 @@ export class RedisLockService implements OnModuleDestroy {
 
       if (result !== 'OK') {
         throw new Error(
-          `Failed to update lock status for ${expectedHash} to ${status}`,
+          `Failed to update lock status for tenant: ${tenantId}, hash: ${expectedHash} to ${status}`,
         );
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.stack : String(error);
       this.logger.error(
-        `Failed to update lock status for ${expectedHash} to ${status}`,
+        `Failed to update lock status for tenant: ${tenantId}, hash: ${expectedHash} to ${status}`,
         errorMessage,
       );
       throw error;

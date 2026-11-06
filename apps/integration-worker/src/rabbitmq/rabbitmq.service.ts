@@ -7,13 +7,9 @@ import { ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
 import { connect, Channel, ConsumeMessage, ChannelModel } from 'amqplib';
 import { Readable } from 'stream';
-import type {
-  SyncJobPayload,
-  RabbitMQStatus,
-  SyncJobHandler,
-} from './rabbitmq.types';
+import type { SyncJobPayload, RabbitMQStatus } from './rabbitmq.types';
 import type { LockResult } from '../redis/redis.types';
-import { AppLogger } from '../app.logger';
+import { AppLogger } from '@enterprise-sync/shared';
 import { DatabaseService } from '../database/database.service';
 import { RedisLockService } from '../redis/redis-lock.service';
 import { S3ReaderService } from '../s3/s3-reader.service';
@@ -34,7 +30,6 @@ export class RabbitMQConsumerService
   private isProcessing = false;
   private isShuttingDown = false;
   private isChannelClosed = true;
-  private jobHandler: SyncJobHandler | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -56,10 +51,6 @@ export class RabbitMQConsumerService
 
   async onApplicationShutdown(): Promise<void> {
     await this.gracefulShutdown();
-  }
-
-  setJobHandler(handler: SyncJobHandler): void {
-    this.jobHandler = handler;
   }
 
   isConnected(): boolean {
@@ -89,7 +80,11 @@ export class RabbitMQConsumerService
     );
     const vhost = this.configService.get<string>('RABBITMQ_VHOST', '/');
 
-    const rabbitUrl = `amqp://${user}:${pass}@${host}:${port}${vhost}`;
+    const vhostPart =
+      vhost && vhost !== '/'
+        ? `/${encodeURIComponent(vhost.replace(/^\//, ''))}`
+        : '';
+    const rabbitUrl = `amqp://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}${vhostPart}`;
 
     this.connection = (await connect(rabbitUrl, {
       heartbeat: 30,
@@ -204,6 +199,7 @@ export class RabbitMQConsumerService
     const streamWrapper: { stream: Readable | null } = { stream: null };
     let fileId: string | null = null;
     let expectedHash: string | null = null;
+    let tenantId: string | null = null;
 
     const correlationId =
       extractCorrelationIdFromHeaders(
@@ -214,18 +210,14 @@ export class RabbitMQConsumerService
       const payload = this.parseAndValidatePayload(msg);
       fileId = payload.fileId;
       expectedHash = payload.expectedHash;
+      tenantId = payload.tenantId;
 
       this.logger.log(
         `[correlationId=${payload.correlationId}] Processing job: fileId=${payload.fileId}`,
       );
 
-      await this.databaseService.updateJobStatus(
-        payload.fileId,
-        payload.fileId,
-        'PROCESSING',
-      );
-
       const lockResult: LockResult = await this.redisLockService.acquireLock(
+        payload.tenantId,
         payload.expectedHash,
       );
 
@@ -240,18 +232,25 @@ export class RabbitMQConsumerService
 
         if (lockResult.currentState === 'PROCESSING') {
           this.logger.warn(
-            `[correlationId=${payload.correlationId}] Job is processing, requeueing`,
+            `[correlationId=${payload.correlationId}] Job is currently processing elsewhere, requeueing with delay`,
           );
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           this.channel!.nack(msg, false, true);
           return;
         }
       }
 
-      const bucket = this.configService.get<string>(
-        'S3_BUCKET',
-        'transactions',
+      await this.databaseService.updateJobStatus(
+        payload.fileId,
+        payload.fileId,
+        'PROCESSING',
       );
-      const key = `uploads/${payload.tenantId}/${payload.fileId}.jsonl`;
+
+      const bucket =
+        payload.bucket ||
+        this.configService.get<string>('S3_BUCKET_NAME') ||
+        this.configService.get<string>('S3_BUCKET', 'transactions-bucket');
+      const key = payload.objectKey;
 
       const { lines, stream } = await this.s3ReaderService.getStream(
         bucket,
@@ -274,6 +273,7 @@ export class RabbitMQConsumerService
       );
 
       await this.redisLockService.updateLockStatus(
+        payload.tenantId,
         payload.expectedHash,
         'COMPLETED',
       );
@@ -298,18 +298,22 @@ export class RabbitMQConsumerService
         `[correlationId=${correlationId}] Message processing failed: ${errorMessage}`,
       );
 
-      if (this.isFatalError(error)) {
+      const isFatal = this.isFatalError(error);
+      const isRedelivered = msg.fields.redelivered;
+
+      if (isFatal || isRedelivered) {
         this.logger.error(
-          `[correlationId=${correlationId}] Fatal error detected, sending to DLQ`,
+          `[correlationId=${correlationId}] Routing message to DLQ (fatal: ${isFatal}, redelivered: ${isRedelivered})`,
         );
 
         if (fileId) {
           await this.databaseService.updateJobStatus(fileId, fileId, 'FAILED');
         }
 
-        if (expectedHash) {
+        if (expectedHash && tenantId) {
           try {
             await this.redisLockService.updateLockStatus(
+              tenantId,
               expectedHash,
               'FAILED',
             );
@@ -327,8 +331,9 @@ export class RabbitMQConsumerService
         this.channel.nack(msg, false, false);
       } else {
         this.logger.warn(
-          `[correlationId=${correlationId}] Transient error, requeueing`,
+          `[correlationId=${correlationId}] Transient error, requeueing with backoff`,
         );
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         this.channel.nack(msg, false, true);
       }
     } finally {
@@ -376,8 +381,14 @@ export class RabbitMQConsumerService
       throw new Error('Missing or invalid tenantId');
     }
 
+    if (typeof obj.objectKey !== 'string' || obj.objectKey.length === 0) {
+      throw new Error('Missing or invalid objectKey');
+    }
+
     return {
       fileId: obj.fileId,
+      objectKey: obj.objectKey,
+      bucket: typeof obj.bucket === 'string' ? obj.bucket : undefined,
       expectedHash: obj.expectedHash,
       correlationId: obj.correlationId,
       tenantId: obj.tenantId,
@@ -400,13 +411,20 @@ export class RabbitMQConsumerService
         return false;
       }
 
-      if (error.message.includes('404') || error.message.includes('NotFound')) {
+      if (
+        error.message.includes('404') ||
+        error.message.includes('NotFound') ||
+        error.message.includes('NoSuchKey')
+      ) {
         return true;
       }
 
       if (
         error.message.includes('Invalid JSON') ||
-        error.message.includes('Missing or invalid')
+        error.message.includes('Missing or invalid') ||
+        error.name === 'PrismaClientValidationError' ||
+        error.name === 'ZodError' ||
+        error.message.includes('invalid input syntax for type uuid')
       ) {
         return true;
       }
@@ -419,8 +437,6 @@ export class RabbitMQConsumerService
     this.logger.log('Starting graceful shutdown...');
     this.isShuttingDown = true;
 
-    await this.waitForCurrentProcessing();
-
     if (this.channel && this.consumerTag) {
       try {
         await this.channel.cancel(this.consumerTag);
@@ -431,6 +447,8 @@ export class RabbitMQConsumerService
         this.logger.error(`Failed to cancel consumer: ${errorMessage}`);
       }
     }
+
+    await this.waitForCurrentProcessing();
 
     const SHUTDOWN_TIMEOUT_MS = 15000;
 

@@ -9,7 +9,7 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { RabbitMQService } from './rabbitmq.service';
 import { S3_CLIENT_TOKEN } from './s3.module';
 import { S3UploadResult } from './s3-upload-result.interface';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class AppService {
@@ -37,8 +37,10 @@ export class AppService {
     tenantId: string,
   ): Promise<void> {
     const payload = {
-      messageId: uuidv4(),
+      messageId: randomUUID(),
       fileId: uploadedFile.fileId,
+      objectKey: uploadedFile.objectKey,
+      bucket: this.bucketName,
       expectedHash,
       correlationId,
       tenantId,
@@ -55,12 +57,20 @@ export class AppService {
         `Failed to publish event for file ${uploadedFile.fileId}:`,
         error,
       );
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.bucketName,
-          Key: uploadedFile.objectKey,
-        }),
-      );
+
+      try {
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.bucketName,
+            Key: uploadedFile.objectKey,
+          }),
+        );
+      } catch (s3Error) {
+        this.logger.error(
+          `Failed to delete S3 file ${uploadedFile.objectKey} during rollback:`,
+          s3Error,
+        );
+      }
 
       throw new ServiceUnavailableException(
         'System temporarily unavailable. File rejected.',

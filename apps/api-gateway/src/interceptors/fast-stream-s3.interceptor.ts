@@ -12,12 +12,11 @@ import {
 import type { Request } from 'express';
 import busboy from 'busboy';
 import { Upload } from '@aws-sdk/lib-storage';
-import { S3Client } from '@aws-sdk/client-s3';
-import { v4 as uuidv4 } from 'uuid';
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Observable, from, switchMap } from 'rxjs';
 import { PassThrough, Transform, type TransformCallback } from 'stream';
 import { pipeline } from 'stream/promises';
-import { createHash, type BinaryLike } from 'crypto';
+import { createHash, randomUUID, type BinaryLike } from 'crypto';
 import { S3_CLIENT_TOKEN } from '../s3.module';
 import { ConfigService } from '@nestjs/config';
 import { S3UploadResult } from '../s3-upload-result.interface';
@@ -56,6 +55,14 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
     if (!contentType?.includes('multipart/form-data')) {
       throw new BadRequestException(
         'Expected Content-Type: multipart/form-data header.',
+      );
+    }
+
+    const tenantIdRaw = req.headers['x-tenant-id'];
+    const tenantId = Array.isArray(tenantIdRaw) ? tenantIdRaw[0] : tenantIdRaw;
+    if (!tenantId || tenantId.trim().length === 0) {
+      throw new BadRequestException(
+        'Missing required tenant header: X-Tenant-ID.',
       );
     }
 
@@ -124,7 +131,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
           );
         }
 
-        const fileId = uuidv4();
+        const fileId = randomUUID();
         uploadObjectKey = `transactions/${fileId}/${filename.replace(
           /[^a-zA-Z0-9.-]/g,
           '_',
@@ -231,6 +238,21 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
           `[Integrity Error] Hash mismatch for key ${uploadObjectKey}. Expected: ${expectedHash}, Got: ${calculatedHash}. Aborting upload.`,
         );
         await uploadTask?.abort();
+
+        try {
+          await this.s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: this.bucketName,
+              Key: uploadObjectKey,
+            }),
+          );
+        } catch (cleanupError) {
+          this.logger.error(
+            `Failed to delete corrupted S3 object for key ${uploadObjectKey}:`,
+            cleanupError,
+          );
+        }
+
         return reject(new BadRequestException('Checksum mismatch'));
       }
 
