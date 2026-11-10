@@ -6,8 +6,9 @@ import {
   BadRequestException,
   PayloadTooLargeException,
   InternalServerErrorException,
+  HttpException,
   Inject,
-  Logger,
+  Optional,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import busboy from 'busboy';
@@ -20,14 +21,14 @@ import { createHash, randomUUID, type BinaryLike } from 'crypto';
 import { S3_CLIENT_TOKEN } from '../s3.module';
 import { ConfigService } from '@nestjs/config';
 import { S3UploadResult } from '../s3-upload-result.interface';
+import { AppLogger } from '@enterprise-sync/shared';
 
-const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
 const S3_UPLOAD_QUEUE_SIZE = 4;
-const S3_UPLOAD_PART_SIZE_BYTES = 5 * 1024 * 1024;
+const S3_UPLOAD_PART_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 @Injectable()
 export class FastStreamToS3Interceptor implements NestInterceptor {
-  private readonly logger = new Logger(FastStreamToS3Interceptor.name);
   private readonly bucketName: string;
   private readonly ALLOWED_MIME_TYPES = [
     'application/x-ndjson',
@@ -38,14 +39,13 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
   constructor(
     @Inject(S3_CLIENT_TOKEN) private readonly s3Client: S3Client,
     private readonly configService: ConfigService,
+    @Optional()
+    private readonly logger: AppLogger = new AppLogger(
+      undefined,
+      FastStreamToS3Interceptor.name,
+    ),
   ) {
-    const bucketName = this.configService.get<string>('S3_BUCKET_NAME');
-
-    if (!bucketName) {
-      throw new Error('S3_BUCKET_NAME environment variable is required');
-    }
-
-    this.bucketName = bucketName;
+    this.bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -119,7 +119,12 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
           );
       };
 
-      bb.on('file', (name, fileStream, info) => {
+      bb.on('file', (_name, fileStream, info) => {
+        if (isFileDetected) {
+          fileStream.resume();
+          return;
+        }
+
         isFileDetected = true;
         const { filename, mimeType } = info;
 
@@ -135,10 +140,11 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         }
 
         const fileId = randomUUID();
-        uploadObjectKey = `transactions/${fileId}/${filename.replace(
+        const safeName = (filename || 'data.ndjson').replace(
           /[^a-zA-Z0-9.-]/g,
           '_',
-        )}`;
+        );
+        uploadObjectKey = `transactions/${fileId}/${safeName}`;
 
         const hasher = createHash('sha256');
 
@@ -194,7 +200,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         });
       });
 
-      bb.on('finish', () => {
+      bb.on('close', () => {
         if (!isFileDetected) {
           reject(new BadRequestException('No file found in the request.'));
         }
@@ -280,6 +286,10 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
 
       resolve(result);
     } catch (error: unknown) {
+      if (error instanceof HttpException) {
+        return reject(error);
+      }
+
       this.logger.error(
         `Streaming or upload failed for key ${uploadObjectKey}. Aborting.`,
         error instanceof Error ? error.stack : String(error),

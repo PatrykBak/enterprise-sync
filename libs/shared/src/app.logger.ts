@@ -3,43 +3,45 @@ import { ClsService } from "nestjs-cls";
 
 @Injectable()
 export class AppLogger extends ConsoleLogger {
-  private readonly clsService: ClsService<Record<string, unknown>>;
-
   constructor(
-    clsService: ClsService<Record<string, unknown>>,
+    @Optional() private readonly clsService?: ClsService,
     @Optional() context: string = AppLogger.name,
   ) {
     super(context);
-    this.clsService = clsService;
   }
 
-  override log(message: string, context?: string): void {
-    const correlationId = this.getCorrelationId();
-    const formattedMessage = correlationId
-      ? `[Correlation-ID: ${correlationId}] ${message}`
-      : message;
-    super.log(formattedMessage, context);
+  override log(message: unknown, context?: string): void {
+    super.log(this.prefixCorrelationId(message), context);
   }
 
-  override error(message: string, stack?: string, context?: string): void {
-    const correlationId = this.getCorrelationId();
-    const formattedMessage = correlationId
-      ? `[Correlation-ID: ${correlationId}] ${message}`
-      : message;
-    super.error(formattedMessage, stack, context);
+  override error(message: unknown, stack?: string, context?: string): void {
+    super.error(this.prefixCorrelationId(message), stack, context);
   }
 
-  override warn(message: string, context?: string): void {
+  override warn(message: unknown, context?: string): void {
+    super.warn(this.prefixCorrelationId(message), context);
+  }
+
+  override debug(message: unknown, context?: string): void {
+    super.debug(this.prefixCorrelationId(message), context);
+  }
+
+  private prefixCorrelationId(message: unknown): unknown {
     const correlationId = this.getCorrelationId();
-    const formattedMessage = correlationId
-      ? `[Correlation-ID: ${correlationId}] ${message}`
-      : message;
-    super.warn(formattedMessage, context);
+    if (!correlationId) {
+      return message;
+    }
+
+    if (typeof message === "string") {
+      return `[Correlation-ID: ${correlationId}] ${message}`;
+    }
+
+    return `[Correlation-ID: ${correlationId}] ${JSON.stringify(message)}`;
   }
 
   private getCorrelationId(): string | undefined {
     try {
-      return this.clsService.get<string>("correlationId");
+      return this.clsService?.get<string>("correlationId");
     } catch {
       return undefined;
     }

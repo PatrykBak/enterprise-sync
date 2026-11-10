@@ -1,7 +1,6 @@
 packages:
   - 'apps/*'
   - 'libs/*'
-allowBuilds:
-  '@nestjs/core': true
-  '@scarf/scarf': true
-  unrs-resolver: true
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - unrs-resolver

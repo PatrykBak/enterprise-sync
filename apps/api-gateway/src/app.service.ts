@@ -1,33 +1,32 @@
 import {
   Injectable,
-  Logger,
   Inject,
   ServiceUnavailableException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { RabbitMQService } from './rabbitmq.service';
 import { S3_CLIENT_TOKEN } from './s3.module';
 import { S3UploadResult } from './s3-upload-result.interface';
+import { AppLogger } from '@enterprise-sync/shared';
 import { randomUUID } from 'crypto';
 
 @Injectable()
 export class AppService {
-  private readonly logger = new Logger(AppService.name);
   private readonly bucketName: string;
 
   constructor(
     @Inject(S3_CLIENT_TOKEN) private readonly s3Client: S3Client,
     private readonly configService: ConfigService,
     private readonly rabbitMQService: RabbitMQService,
+    @Optional()
+    private readonly logger: AppLogger = new AppLogger(
+      undefined,
+      AppService.name,
+    ),
   ) {
-    const bucketName = this.configService.get<string>('S3_BUCKET_NAME');
-
-    if (!bucketName) {
-      throw new Error('S3_BUCKET_NAME environment variable is required');
-    }
-
-    this.bucketName = bucketName;
+    this.bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
   }
 
   async processSyncTransaction(
@@ -64,6 +63,9 @@ export class AppService {
             Bucket: this.bucketName,
             Key: uploadedFile.objectKey,
           }),
+        );
+        this.logger.warn(
+          `Successfully rolled back S3 object for key: ${uploadedFile.objectKey}`,
         );
       } catch (s3Error: unknown) {
         this.logger.error(

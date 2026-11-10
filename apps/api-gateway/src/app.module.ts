@@ -11,7 +11,6 @@ import { Request, Response } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthController } from './health.controller';
-import { AuthController } from './auth/auth.controller';
 import { S3Module } from './s3.module';
 import { RabbitMQModule } from './rabbitmq.module';
 import { HttpExceptionFilter } from './filters/http-exception.filter';
@@ -28,6 +27,7 @@ const throttlerRedisProvider: Provider = {
       port: configService.get<number>('REDIS_PORT', 6379),
       password: configService.get<string>('REDIS_PASSWORD'),
       db: configService.get<number>('REDIS_DB', 0),
+      enableOfflineQueue: false,
     });
   },
 };
@@ -84,7 +84,7 @@ class ThrottlerRedisModule {}
     RabbitMQModule.forRoot(),
     AuthModule,
   ],
-  controllers: [AppController, HealthController, AuthController],
+  controllers: [AppController, HealthController],
   providers: [
     AppService,
     AppLogger,

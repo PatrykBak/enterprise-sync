@@ -43,10 +43,6 @@ describe('TransactionProcessorService', () => {
     databaseService = module.get(DatabaseService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
   it('should correctly mask PII in bank account numbers', async () => {
     const validLines = [
       JSON.stringify({
@@ -83,7 +79,7 @@ describe('TransactionProcessorService', () => {
       }),
       JSON.stringify({
         transactionId: 'tx-bad-amount',
-        amount: '-10.00', // Ujemna kwota - nie przejdzie walidacji Zod
+        amount: '-10.00',
         currency: 'USD',
         senderAccount: 'PL1111222233334444',
         receiverAccount: 'PL5555666677778888',
@@ -135,7 +131,6 @@ describe('TransactionProcessorService', () => {
       Readable.from(lines),
     );
 
-    // BATCH_SIZE = 2, więc przy 3 rekordach powinny być 2 wywołania: pierwsza paczka (2) i pozostałość (1)
     expect(databaseService.saveTransactionsBatch.mock.calls).toHaveLength(2);
     expect(databaseService.saveTransactionsBatch.mock.calls[0][0]).toHaveLength(
       2,

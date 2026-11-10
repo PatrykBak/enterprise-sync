@@ -5,13 +5,15 @@ import { ConfigService } from '@nestjs/config';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
-    logger: false,
+    bufferLogs: true,
   });
+
   const logger = app.get(AppLogger);
   app.useLogger(logger);
   app.enableShutdownHooks();
+
   const configService = app.get(ConfigService);
-  const port = configService.get<number>('WORKER_PORT') ?? 3001;
+  const port = Number(configService.get('WORKER_PORT')) || 3001;
   await app.listen(port);
 }
 

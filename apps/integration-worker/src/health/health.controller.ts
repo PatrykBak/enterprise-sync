@@ -2,17 +2,19 @@ import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { RabbitMQConsumerService } from '../rabbitmq/rabbitmq.service';
 import { DatabaseService } from '../database/database.service';
 
-interface LivenessResponse {
+export interface LivenessResponse {
   status: string;
   timestamp: string;
 }
 
-interface ReadinessResponse {
+export interface ReadinessResponse {
   status: string;
-  details?: {
+  details: {
     rabbitmq: boolean;
     database: boolean;
+    error?: string;
   };
+  timestamp: string;
 }
 
 @Controller('health')
@@ -34,39 +36,31 @@ export class HealthController {
   async getReadiness(): Promise<ReadinessResponse> {
     const rabbitmqConnected = this.rabbitMQService.isConnected();
     let databaseConnected = false;
+    let databaseError: string | undefined;
 
     try {
       await this.databaseService.$queryRaw`SELECT 1`;
       databaseConnected = true;
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      throw new ServiceUnavailableException({
-        status: 'error',
-        details: {
-          rabbitmq: rabbitmqConnected,
-          database: false,
-          error: errorMessage,
-        },
-      });
+      databaseError = error instanceof Error ? error.message : String(error);
+      databaseConnected = false;
     }
 
-    if (!rabbitmqConnected || !databaseConnected) {
-      throw new ServiceUnavailableException({
-        status: 'error',
-        details: {
-          rabbitmq: rabbitmqConnected,
-          database: databaseConnected,
-        },
-      });
-    }
-
-    return {
-      status: 'ok',
+    const isHealthy = rabbitmqConnected && databaseConnected;
+    const responsePayload: ReadinessResponse = {
+      status: isHealthy ? 'ok' : 'error',
       details: {
         rabbitmq: rabbitmqConnected,
         database: databaseConnected,
+        ...(databaseError ? { error: databaseError } : {}),
       },
+      timestamp: new Date().toISOString(),
     };
+
+    if (!isHealthy) {
+      throw new ServiceUnavailableException(responsePayload);
+    }
+
+    return responsePayload;
   }
 }

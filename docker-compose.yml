@@ -2,10 +2,11 @@ x-healthcheck-defaults: &healthcheck_defaults
   interval: 5s
   timeout: 5s
   retries: 5
+  start_period: 15s
 
 services:
   postgres:
-    image: postgres:16.13-alpine
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -24,11 +25,6 @@ services:
   redis:
     image: redis:7.4-alpine
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
     ports:
       - "6379:6379"
     volumes:
@@ -55,6 +51,7 @@ services:
     healthcheck:
       <<: *healthcheck_defaults
       interval: 10s
+      start_period: 25s
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
 
   minio:

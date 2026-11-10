@@ -1,12 +1,13 @@
 import {
   Injectable,
-  Logger,
   OnModuleInit,
   OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
 import { connect, ConfirmChannel, ChannelModel } from 'amqplib';
+import { AppLogger } from '@enterprise-sync/shared';
 
 export interface RabbitMQOptions {
   exchange: string;
@@ -30,15 +31,19 @@ const MAX_RETRY_DELAY_MS = 4000;
 
 @Injectable()
 export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
-  private connection!: ChannelModel;
-  private channel!: ConfirmChannel;
-  private readonly logger = new Logger(RabbitMQService.name);
+  private connection?: ChannelModel;
+  private channel?: ConfirmChannel;
   private isConnecting = false;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly options: RabbitMQOptions,
-    private readonly clsService: ClsService<Record<string, unknown>>,
+    private readonly clsService: ClsService,
+    @Optional()
+    private readonly logger: AppLogger = new AppLogger(
+      clsService,
+      RabbitMQService.name,
+    ),
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -95,19 +100,29 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    this.connection.on('error', (err) => {
-      this.logger.error('RabbitMQ connection error:', err);
+    this.connection?.on('error', (err: unknown) => {
+      this.logger.error(
+        'RabbitMQ connection error:',
+        err instanceof Error ? err.stack : String(err),
+      );
     });
-    this.connection.on('close', () => {
+    this.connection?.on('close', () => {
       this.logger.warn('RabbitMQ connection closed.');
     });
   }
 
   private async setupChannel(): Promise<void> {
+    if (!this.connection) {
+      throw new Error('Cannot setup channel without an active connection');
+    }
+
     this.channel = await this.connection.createConfirmChannel();
 
-    this.channel.on('error', (err) => {
-      this.logger.error('RabbitMQ channel error:', err);
+    this.channel.on('error', (err: unknown) => {
+      this.logger.error(
+        'RabbitMQ channel error:',
+        err instanceof Error ? err.stack : String(err),
+      );
     });
     this.channel.on('close', () => {
       this.logger.warn('RabbitMQ channel closed.');
@@ -129,16 +144,30 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
       if (this.connection) {
         await this.connection.close();
       }
-    } catch (err) {
-      this.logger.error('Error closing RabbitMQ connection on destroy', err);
+    } catch (err: unknown) {
+      this.logger.error(
+        'Error closing RabbitMQ connection on destroy',
+        err instanceof Error ? err.stack : String(err),
+      );
     }
   }
 
   async publish(
     payload: Record<string, unknown>,
-    correlationId: string,
+    correlationId?: string,
     timeoutMs: number = DEFAULT_PUBLISH_TIMEOUT_MS,
   ): Promise<void> {
+    if (!this.channel) {
+      throw new RabbitMQPublishException(
+        'RabbitMQ channel is not available for publishing',
+      );
+    }
+
+    const resolvedCorrelationId =
+      correlationId ||
+      this.clsService.get<string>('correlationId') ||
+      'not-provided';
+
     const maxRetries = DEFAULT_MAX_RETRIES;
 
     let buffer: Buffer;
@@ -156,6 +185,7 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
           this.options.exchange,
           this.options.routingKey,
           buffer,
+          resolvedCorrelationId,
           timeoutMs,
         );
         return;
@@ -173,7 +203,7 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
           await new Promise((resolve) => setTimeout(resolve, delay));
         } else {
           this.logger.error(
-            `[CRITICAL] Failed to publish message to RabbitMQ after ${attempt + 1} attempts. CorrelationId: ${correlationId}. Message: ${JSON.stringify(payload)}`,
+            `[CRITICAL] Failed to publish message to RabbitMQ after ${attempt + 1} attempts. CorrelationId: ${resolvedCorrelationId}. Message: ${JSON.stringify(payload)}`,
           );
           throw new RabbitMQPublishException(
             `Failed to publish message after ${attempt + 1} attempts`,
@@ -188,10 +218,16 @@ export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
     exchange: string,
     routingKey: string,
     buffer: Buffer,
+    correlationId: string,
     timeoutMs: number,
   ): Promise<void> {
-    const correlationId = this.clsService.get<string>('correlationId') ?? '';
     return new Promise<void>((resolve, reject) => {
+      if (!this.channel) {
+        return reject(
+          new RabbitMQPublishException('Channel closed unexpectedly'),
+        );
+      }
+
       const timeoutId = setTimeout(() => {
         reject(
           new RabbitMQPublishException(

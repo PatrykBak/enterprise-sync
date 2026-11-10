@@ -1,11 +1,7 @@
-import {
-  Injectable,
-  OnModuleInit,
-  OnApplicationShutdown,
-} from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
-import { connect, Channel, ConsumeMessage, ChannelModel } from 'amqplib';
+import { connect, ConfirmChannel, ConsumeMessage, ChannelModel } from 'amqplib';
 import { z } from 'zod';
 import { Readable } from 'stream';
 import type { SyncJobPayload, RabbitMQStatus } from './rabbitmq.types';
@@ -21,12 +17,9 @@ import {
 } from '../amqp-cls.interceptor';
 
 @Injectable()
-export class RabbitMQConsumerService
-  implements OnModuleInit, OnApplicationShutdown
-{
-  private readonly logger: AppLogger;
+export class RabbitMQConsumerService implements OnModuleInit, OnModuleDestroy {
   private connection: ChannelModel | null = null;
-  private channel: Channel | null = null;
+  private channel: ConfirmChannel | null = null;
   private consumerTag: string | null = null;
   private isProcessing = false;
   private isShuttingDown = false;
@@ -39,10 +32,8 @@ export class RabbitMQConsumerService
     private readonly redisLockService: RedisLockService,
     private readonly s3ReaderService: S3ReaderService,
     private readonly transactionProcessor: TransactionProcessorService,
-    appLogger: AppLogger,
-  ) {
-    this.logger = appLogger;
-  }
+    private readonly logger: AppLogger,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     await this.connect();
@@ -50,7 +41,7 @@ export class RabbitMQConsumerService
     await this.startConsuming();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  async onModuleDestroy(): Promise<void> {
     await this.gracefulShutdown();
   }
 
@@ -71,14 +62,8 @@ export class RabbitMQConsumerService
   private async connect(): Promise<void> {
     const host = this.configService.get<string>('RABBITMQ_HOST', 'localhost');
     const port = this.configService.get<number>('RABBITMQ_PORT', 5672);
-    const user = this.configService.get<string>(
-      'RABBITMQ_DEFAULT_USER',
-      'guest',
-    );
-    const pass = this.configService.get<string>(
-      'RABBITMQ_DEFAULT_PASS',
-      'guest',
-    );
+    const user = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_USER');
+    const pass = this.configService.getOrThrow<string>('RABBITMQ_DEFAULT_PASS');
     const vhost = this.configService.get<string>('RABBITMQ_VHOST', '/');
 
     const vhostPart =
@@ -173,9 +158,7 @@ export class RabbitMQConsumerService
         }
 
         if (this.isShuttingDown) {
-          if (this.channel) {
-            this.channel.nack(msg, false, true);
-          }
+          this.channel?.nack(msg, false, true);
           return;
         }
 
@@ -213,9 +196,7 @@ export class RabbitMQConsumerService
       expectedHash = payload.expectedHash;
       tenantId = payload.tenantId;
 
-      this.logger.log(
-        `[correlationId=${payload.correlationId}] Processing job: fileId=${payload.fileId}`,
-      );
+      this.logger.log(`Processing job: fileId=${payload.fileId}`);
 
       const lockResult: LockResult = await this.redisLockService.acquireLock(
         payload.tenantId,
@@ -224,26 +205,24 @@ export class RabbitMQConsumerService
 
       if (lockResult.status === 'COLLISION') {
         if (lockResult.currentState === 'COMPLETED') {
-          this.logger.log(
-            `[correlationId=${payload.correlationId}] Job already completed, acknowledging`,
-          );
-          this.channel!.ack(msg);
+          this.logger.log('Job already completed, acknowledging message');
+          this.channel?.ack(msg);
           return;
         }
 
         if (lockResult.currentState === 'PROCESSING') {
           this.logger.warn(
-            `[correlationId=${payload.correlationId}] Job is currently processing elsewhere, requeueing with delay`,
+            'Job is currently processing elsewhere, requeueing with delay',
           );
           await new Promise((resolve) => setTimeout(resolve, 1000));
-          this.channel!.nack(msg, false, true);
+          this.channel?.nack(msg, false, true);
           return;
         }
 
         this.logger.warn(
-          `[correlationId=${payload.correlationId}] Lock collision in unexpected state: ${lockResult.currentState}, routing to DLQ`,
+          `Lock collision in unexpected state: ${lockResult.currentState}, routing to DLQ`,
         );
-        this.channel!.nack(msg, false, false);
+        this.channel?.nack(msg, false, false);
         return;
       }
 
@@ -282,11 +261,8 @@ export class RabbitMQConsumerService
         'COMPLETED',
       );
 
-      this.channel!.ack(msg);
-
-      this.logger.log(
-        `[correlationId=${payload.correlationId}] Job completed successfully`,
-      );
+      this.channel?.ack(msg);
+      this.logger.log('Job completed successfully');
     };
 
     try {
@@ -298,33 +274,45 @@ export class RabbitMQConsumerService
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
-      this.logger.error(
-        `[correlationId=${correlationId}] Message processing failed: ${errorMessage}`,
-      );
+      this.logger.error(`Message processing failed: ${errorMessage}`);
 
       const isFatal = this.isFatalError(error);
       const isRedelivered = msg.fields.redelivered;
 
       if (isFatal || isRedelivered) {
         this.logger.error(
-          `[correlationId=${correlationId}] Routing message to DLQ (fatal: ${isFatal}, redelivered: ${isRedelivered})`,
+          `Routing message to DLQ (fatal: ${isFatal}, redelivered: ${isRedelivered})`,
         );
 
         if (fileId) {
-          await this.databaseService.updateJobStatus(fileId, fileId, 'FAILED');
+          try {
+            await this.databaseService.updateJobStatus(
+              fileId,
+              fileId,
+              'FAILED',
+            );
+          } catch (dbErr: unknown) {
+            this.logger.error(
+              `Failed to update job status to FAILED: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+            );
+          }
         }
 
         if (expectedHash && tenantId) {
-          await this.redisLockService.releaseLock(tenantId, expectedHash);
+          try {
+            await this.redisLockService.releaseLock(tenantId, expectedHash);
+          } catch (lockErr: unknown) {
+            this.logger.error(
+              `Failed to release lock: ${lockErr instanceof Error ? lockErr.message : String(lockErr)}`,
+            );
+          }
         }
 
-        this.channel.nack(msg, false, false);
+        this.channel?.nack(msg, false, false);
       } else {
-        this.logger.warn(
-          `[correlationId=${correlationId}] Transient error, requeueing with backoff`,
-        );
+        this.logger.warn('Transient error, requeueing message with backoff');
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        this.channel.nack(msg, false, true);
+        this.channel?.nack(msg, false, true);
       }
     } finally {
       this.isProcessing = false;
@@ -404,7 +392,7 @@ export class RabbitMQConsumerService
   }
 
   private async gracefulShutdown(): Promise<void> {
-    this.logger.log('Starting graceful shutdown...');
+    this.logger.log('Starting graceful shutdown of RabbitMQ consumer...');
     this.isShuttingDown = true;
 
     if (this.channel && this.consumerTag) {

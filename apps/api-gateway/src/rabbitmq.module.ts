@@ -2,6 +2,7 @@ import { Module, DynamicModule, Provider } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
 import { RabbitMQService } from './rabbitmq.service';
+import { AppLogger } from '@enterprise-sync/shared';
 
 const DEFAULT_EXCHANGE = 'integration.events';
 const DEFAULT_ROUTING_KEY = 'transaction.file.uploaded';
@@ -24,14 +25,12 @@ export class RabbitMQModule {
     const rabbitMQServiceProvider: Provider = {
       provide: RabbitMQService,
       inject: [ConfigService, ClsService],
-      useFactory: (
-        configService: ConfigService,
-        clsService: ClsService<Record<string, unknown>>,
-      ) => {
+      useFactory: (configService: ConfigService, clsService: ClsService) => {
         return new RabbitMQService(
           configService,
           { exchange, routingKey },
           clsService,
+          new AppLogger(clsService, RabbitMQService.name),
         );
       },
     };

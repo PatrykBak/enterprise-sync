@@ -11,14 +11,10 @@ import { AppLogger } from '@enterprise-sync/shared';
 
 @Injectable()
 export class RedisLockService implements OnModuleDestroy {
-  private readonly logger: AppLogger;
-
   constructor(
     @Inject(REDIS_CLIENT) private readonly redisClient: Redis,
-    logger: AppLogger,
-  ) {
-    this.logger = logger;
-  }
+    private readonly logger: AppLogger,
+  ) {}
 
   async acquireLock(
     tenantId: string,
@@ -105,6 +101,10 @@ export class RedisLockService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.redisClient.quit();
+    try {
+      await this.redisClient.quit();
+    } catch {
+      this.redisClient.disconnect();
+    }
   }
 }

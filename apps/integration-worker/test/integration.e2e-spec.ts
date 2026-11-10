@@ -1,15 +1,6 @@
-/// <reference types="jest" />
-
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { ClsModule } from 'nestjs-cls';
-import { DatabaseModule } from '../src/database/database.module';
-import { RabbitMQModule } from '../src/rabbitmq/rabbitmq.module';
-import { HealthModule } from '../src/health/health.module';
-import { RedisModule } from '../src/redis/redis.module';
-import { S3ReaderService } from '../src/s3/s3-reader.service';
-import { TransactionProcessorService } from '../src/processor/transaction-processor.service';
+import { AppModule } from '../src/app.module';
 import { PrismaClient, JobStatus } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
@@ -18,32 +9,34 @@ import {
   PutObjectCommand,
   CreateBucketCommand,
 } from '@aws-sdk/client-s3';
-import { connect, Channel, ChannelModel } from 'amqplib';
+import { connect, ConfirmChannel, ChannelModel } from 'amqplib';
 import { Redis } from 'ioredis';
 import request from 'supertest';
-import { AppLogger } from '@enterprise-sync/shared';
+import crypto from 'node:crypto';
 
 describe('IntegrationWorker E2E (Docker Compose)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
   let pgPool: pg.Pool;
   let s3Client: S3Client;
-  let rabbitChannel: Channel;
+  let rabbitChannel: ConfirmChannel;
   let rabbitConnection: ChannelModel;
   let redisClient: Redis;
 
   const TEST_TENANT_ID = 'test-tenant-001';
-  const TEST_FILE_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'; // Poprawny UUID
+  const TEST_FILE_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
   const TEST_CORRELATION_ID = 'corr-e2e-001';
-  const TEST_EXPECTED_HASH =
-    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   const TEST_BUCKET = 'transactions-bucket';
   const TEST_OBJECT_KEY = `transactions/${TEST_FILE_ID}/test-data.ndjson`;
 
   beforeAll(async () => {
     process.env.DATABASE_URL =
       'postgresql://admin:password@localhost:5432/enterprise_db';
-    process.env.RABBITMQ_URL = 'amqp://localhost:5672';
+    process.env.RABBITMQ_DEFAULT_USER = 'admin';
+    process.env.RABBITMQ_DEFAULT_PASS = 'password';
+    process.env.RABBITMQ_HOST = 'localhost';
+    process.env.RABBITMQ_PORT = '5672';
+    process.env.RABBITMQ_URL = 'amqp://admin:password@localhost:5672';
     process.env.REDIS_HOST = 'localhost';
     process.env.REDIS_PORT = '6379';
     process.env.REDIS_PASSWORD = '';
@@ -62,30 +55,18 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         secretAccessKey: 'password',
       },
       forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
 
     try {
       await s3Client.send(new CreateBucketCommand({ Bucket: TEST_BUCKET }));
-    } catch {
-      // Bucket może już istnieć
+    } catch (error: unknown) {
+      void error;
     }
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [
-        ConfigModule.forRoot({
-          isGlobal: true,
-        }),
-        ClsModule.forRoot({
-          global: true,
-          middleware: { mount: true, generateId: true },
-        }),
-        DatabaseModule,
-        RabbitMQModule,
-        HealthModule,
-        RedisModule,
-      ],
-      controllers: [],
-      providers: [AppLogger, S3ReaderService, TransactionProcessorService],
+      imports: [AppModule],
     }).compile();
 
     app = moduleFixture.createNestApplication();
@@ -110,26 +91,34 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
-    if (prisma) {
-      await prisma.$disconnect();
-    }
-    if (pgPool) {
-      await pgPool.end();
-    }
-    if (rabbitChannel) {
-      await rabbitChannel.close();
-    }
-    if (rabbitConnection) {
-      await rabbitConnection.close();
-    }
-    if (redisClient) {
-      await redisClient.quit();
-    }
-    if (s3Client) {
-      s3Client.destroy();
+    try {
+      if (app) {
+        await app.close();
+      }
+      if (prisma) {
+        await prisma.$disconnect();
+      }
+      if (pgPool) {
+        await pgPool.end();
+      }
+      if (rabbitChannel) {
+        await rabbitChannel.close();
+      }
+      if (rabbitConnection) {
+        await rabbitConnection.close();
+      }
+      if (redisClient) {
+        try {
+          await redisClient.quit();
+        } catch {
+          redisClient.disconnect();
+        }
+      }
+      if (s3Client) {
+        s3Client.destroy();
+      }
+    } catch (cleanupError: unknown) {
+      console.error('Error during E2E teardown:', cleanupError);
     }
   }, 30_000);
 
@@ -137,6 +126,13 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
     await prisma.transactionLog.deleteMany();
     await prisma.integrationJob.deleteMany();
     await redisClient.flushdb();
+
+    try {
+      await rabbitChannel.purgeQueue('tx-sync-jobs-v2');
+      await rabbitChannel.purgeQueue('tx-sync-jobs-dlq');
+    } catch (error: unknown) {
+      void error;
+    }
   });
 
   describe('Active Polling & PII Masking', () => {
@@ -197,6 +193,10 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
       const ndjsonContent = testTransactions
         .map((tx) => JSON.stringify(tx))
         .join('\n');
+      const computedHash = crypto
+        .createHash('sha256')
+        .update(ndjsonContent)
+        .digest('hex');
 
       await s3Client.send(
         new PutObjectCommand({
@@ -219,7 +219,7 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         fileId: TEST_FILE_ID,
         objectKey: TEST_OBJECT_KEY,
         bucket: TEST_BUCKET,
-        expectedHash: TEST_EXPECTED_HASH,
+        expectedHash: computedHash,
         correlationId: TEST_CORRELATION_ID,
         tenantId: TEST_TENANT_ID,
       };
@@ -233,6 +233,7 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
           persistent: true,
         },
       );
+      await rabbitChannel.waitForConfirms();
 
       const startTime = Date.now();
       const timeoutMs = 15_000;
@@ -311,8 +312,12 @@ describe('IntegrationWorker E2E (Docker Compose)', () => {
         .get('/health/liveness')
         .expect(200);
 
-      expect(response.body).toHaveProperty('status', 'ok');
-      expect(response.body).toHaveProperty('timestamp');
+      const body = response.body as {
+        status: string;
+        timestamp: string;
+      };
+      expect(body).toHaveProperty('status', 'ok');
+      expect(body).toHaveProperty('timestamp');
     });
   });
 });

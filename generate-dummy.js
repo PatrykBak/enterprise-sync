@@ -3,22 +3,17 @@ const path = require("path");
 const { pipeline } = require("stream/promises");
 const crypto = require("crypto");
 
-const SIZE_IN_MB = 2000;
+const SIZE_IN_MB = 400;
 const TARGET_SIZE_BYTES = SIZE_IN_MB * 1024 * 1024;
 const FILE_PATH = path.join(__dirname, `dummy-${SIZE_IN_MB}mb.ndjson`);
-console.log(`Generating ${SIZE_IN_MB}MB dummy file...`);
 
-const hasher = crypto.createHash("sha256");
-
-// Generates data chunks sequentially to keep memory footprint low
-async function* generateData(targetBytes) {
+async function* generateData(targetBytes, hasher) {
   let bytesWritten = 0;
   let index = 0;
   const baseTimestamp = Date.now();
 
   while (bytesWritten < targetBytes) {
     index++;
-    // Simulate chronological events spaced 1 minute apart
     const simulatedDate = new Date(baseTimestamp + index * 60000);
 
     const record =
@@ -42,38 +37,39 @@ async function* generateData(targetBytes) {
 }
 
 async function run() {
-  const writeStream = fs.createWriteStream(FILE_PATH);
+  console.log(`Generating ${SIZE_IN_MB}MB dummy file at: ${FILE_PATH}`);
 
-  writeStream.on("error", (err) => {
-    console.error("[Error] File write stream failed:", err.message);
-    process.exit(1);
-  });
+  if (fs.existsSync(FILE_PATH)) {
+    fs.unlinkSync(FILE_PATH);
+  }
+
+  const hasher = crypto.createHash("sha256");
+  const writeStream = fs.createWriteStream(FILE_PATH, { flags: "w" });
 
   try {
-    await pipeline(generateData(TARGET_SIZE_BYTES), writeStream);
-    console.log(
-      `[Success] Generated ${SIZE_IN_MB}MB dummy file at ${FILE_PATH}`,
-    );
-
+    await pipeline(generateData(TARGET_SIZE_BYTES, hasher), writeStream);
     const fileHash = hasher.digest("hex");
+
+    console.log(`[Success] Generated ${SIZE_IN_MB}MB dummy file.`);
     console.log(`[Hash] SHA256: ${fileHash}\n`);
-    console.log(`1. Obtain JWT Access Token:`);
+    console.log("1. Obtain JWT Access Token:");
     console.log(
-      `curl -X POST http://localhost:3000/auth/login -H "Content-Type: application/json" -d '{"clientId":"admin-client","clientSecret":"dev-secret-token"}'\n`,
+      'curl -X POST http://localhost:3000/auth/login -H "Content-Type: application/json" -d \'{"clientId":"admin-client","clientSecret":"dev-secret-token"}\'\n',
     );
-    console.log(`2. Upload file using the received <ACCESS_TOKEN>:`);
-    console.log(`curl -X POST http://localhost:3000/api/sync-transactions \\`);
-    console.log(`  -H "Authorization: Bearer <ACCESS_TOKEN>" \\`);
+    console.log("2. Upload file using the received <ACCESS_TOKEN>:");
+    console.log("curl -X POST http://localhost:3000/api/sync-transactions \\");
+    console.log('  -H "Authorization: Bearer <ACCESS_TOKEN>" \\');
     console.log(
-      `  -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \\`,
+      '  -H "X-Correlation-ID: 123e4567-e89b-12d3-a456-426614174000" \\',
     );
-    console.log(`  -H "X-Tenant-ID: test-tenant-1" \\`);
+    console.log('  -H "X-Tenant-ID: test-tenant-1" \\');
     console.log(`  -H "X-Expected-Hash: ${fileHash}" \\`);
     console.log(
       `  -F "file=@dummy-${SIZE_IN_MB}mb.ndjson;type=application/x-ndjson"`,
     );
   } catch (err) {
-    console.error("[Error] Pipeline failed during execution:", err.message);
+    console.error("[Error] Failed to generate dummy file:", err.message);
+    process.exit(1);
   }
 }
 

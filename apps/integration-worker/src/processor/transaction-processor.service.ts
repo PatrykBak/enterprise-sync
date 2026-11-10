@@ -45,17 +45,23 @@ export class TransactionProcessorService {
     jobId: string,
     lines: AsyncIterable<string>,
   ): Promise<void> {
-    const batchSize = this.configService.get<number>('BATCH_SIZE', 1000);
+    const batchSize = Math.max(
+      1,
+      parseInt(this.configService.get<string>('BATCH_SIZE') ?? '1000', 10) ||
+        1000,
+    );
     const buffer: Prisma.TransactionLogCreateManyInput[] = [];
+    let lineNumber = 0;
 
     for await (const line of lines) {
+      lineNumber += 1;
       let parsed: unknown;
 
       try {
         parsed = JSON.parse(line) as unknown;
       } catch {
         this.appLogger.warn(
-          `Poison pill skipped: failed to parse line JSON: ${line.substring(0, 100)}`,
+          `Skipping invalid NDJSON record at line ${lineNumber}: malformed JSON or schema mismatch`,
           'TransactionProcessorService',
         );
         continue;
@@ -64,7 +70,7 @@ export class TransactionProcessorService {
       const validationResult = RawTransactionSchema.safeParse(parsed);
       if (!validationResult.success) {
         this.appLogger.warn(
-          `Poison pill skipped: invalid transaction schema: ${JSON.stringify(validationResult.error.format())}`,
+          `Skipping invalid NDJSON record at line ${lineNumber}: malformed JSON or schema mismatch`,
           'TransactionProcessorService',
         );
         continue;
@@ -102,7 +108,7 @@ export class TransactionProcessorService {
 
   private maskAccount(account: string): string {
     if (account.length <= 6) {
-      return account;
+      return '*'.repeat(account.length);
     }
 
     const start = account.substring(0, 2);

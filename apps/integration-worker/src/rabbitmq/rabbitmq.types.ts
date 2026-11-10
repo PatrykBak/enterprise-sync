@@ -1,5 +1,3 @@
-import type { ConsumeMessage } from 'amqplib';
-
 export interface SyncJobPayload {
   fileId: string;
   objectKey: string;
@@ -17,8 +15,3 @@ export interface RabbitMQStatus {
   isProcessing: boolean;
   isShuttingDown: boolean;
 }
-
-export type SyncJobHandler = (
-  payload: SyncJobPayload,
-  msg: ConsumeMessage,
-) => Promise<void>;

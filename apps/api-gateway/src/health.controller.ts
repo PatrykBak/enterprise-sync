@@ -46,6 +46,7 @@ export class HealthController {
           rabbitmq: rabbitConnected,
           redis: redisConnected,
         },
+        timestamp: new Date().toISOString(),
       });
     }
 

@@ -17,8 +17,11 @@
     "skipLibCheck": true,
     "strict": true,
     "forceConsistentCasingInFileNames": true,
+    "types": ["jest", "node"],
     "paths": {
       "@enterprise-sync/shared": ["../../libs/shared/src/index.ts"]
     }
-  }
+  },
+  "include": ["src/**/*", "test/**/*", "../../libs/shared/src/**/*"],
+  "exclude": ["node_modules", "dist", "coverage"]
 }

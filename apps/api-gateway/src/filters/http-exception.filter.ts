@@ -3,17 +3,21 @@ import {
   Catch,
   ExceptionFilter,
   HttpException,
-  Logger,
+  Optional,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ClsService } from 'nestjs-cls';
+import { AppLogger } from '@enterprise-sync/shared';
 
 @Catch(HttpException)
 export class HttpExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(HttpExceptionFilter.name);
-
   constructor(
-    private readonly clsService: ClsService<Record<string, unknown>>,
+    private readonly clsService: ClsService,
+    @Optional()
+    private readonly logger: AppLogger = new AppLogger(
+      clsService,
+      HttpExceptionFilter.name,
+    ),
   ) {}
 
   catch(exception: HttpException, host: ArgumentsHost): void {
@@ -21,16 +25,28 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const correlationId =
-      this.clsService.get<string>('correlationId') ||
-      (typeof request.headers['x-correlation-id'] === 'string'
-        ? request.headers['x-correlation-id']
-        : 'not-provided');
+    if (response.headersSent) {
+      return;
+    }
 
-    const tenantId =
-      typeof request.headers['x-tenant-id'] === 'string'
-        ? request.headers['x-tenant-id']
-        : 'not-provided';
+    let correlationId: string | undefined;
+    try {
+      correlationId = this.clsService.get<string>('correlationId');
+    } catch {
+      correlationId = undefined;
+    }
+
+    if (!correlationId) {
+      const headerCorrelation = request.headers['x-correlation-id'];
+      correlationId = Array.isArray(headerCorrelation)
+        ? headerCorrelation[0]
+        : (headerCorrelation ?? 'not-provided');
+    }
+
+    const headerTenant = request.headers['x-tenant-id'];
+    const tenantId = Array.isArray(headerTenant)
+      ? headerTenant[0]
+      : (headerTenant ?? 'not-provided');
 
     const status = exception.getStatus();
     const exceptionResponse = exception.getResponse();
@@ -41,18 +57,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
       errorMessages = exceptionResponse;
     } else if (
       typeof exceptionResponse === 'object' &&
-      exceptionResponse !== null &&
-      'message' in exceptionResponse
+      exceptionResponse !== null
     ) {
-      const resMessage = (exceptionResponse as { message: unknown }).message;
-      errorMessages = Array.isArray(resMessage)
-        ? (resMessage as string[])
-        : String(resMessage);
+      if ('message' in exceptionResponse) {
+        const resMessage = (exceptionResponse as { message: unknown }).message;
+        errorMessages = Array.isArray(resMessage)
+          ? (resMessage as string[])
+          : String(resMessage);
+      } else if ('error' in exceptionResponse) {
+        errorMessages = String((exceptionResponse as { error: unknown }).error);
+      } else {
+        errorMessages = JSON.stringify(exceptionResponse);
+      }
     }
 
-    const logMessage = `[${correlationId}] HTTP Status: ${status} Error: ${JSON.stringify(
-      errorMessages,
-    )}`;
+    const logMessage = `HTTP Status: ${status} [${request.method} ${request.url}] - Error: ${JSON.stringify(errorMessages)}`;
 
     if (status >= 500) {
       this.logger.error(logMessage, exception.stack);

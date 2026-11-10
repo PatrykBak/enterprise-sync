@@ -7,7 +7,6 @@ import {
   HttpCode,
   HttpStatus,
   Headers,
-  Logger,
 } from '@nestjs/common';
 import { AppService } from './app.service';
 import { FastStreamToS3Interceptor } from './interceptors/fast-stream-s3.interceptor';
@@ -20,11 +19,9 @@ import { ClsService } from 'nestjs-cls';
 
 @Controller('api')
 export class AppController {
-  private readonly logger = new Logger(AppController.name);
-
   constructor(
     private readonly appService: AppService,
-    private readonly clsService: ClsService<Record<string, unknown>>,
+    private readonly clsService: ClsService,
   ) {}
 
   @Post('sync-transactions')
@@ -35,30 +32,26 @@ export class AppController {
   async syncTransactions(
     @UploadedS3File() uploadedFile: S3UploadResult,
     @Headers('x-expected-hash') expectedHash: string | undefined,
-    @Headers('x-tenant-id') tenantId: string,
+    @Headers('x-tenant-id') tenantId: string | undefined,
   ): Promise<{ status: 'accepted'; correlationId: string }> {
     if (!uploadedFile) {
-      throw new BadRequestException({
-        message: 'File was not uploaded',
-        correlationId: 'unknown',
-      });
+      throw new BadRequestException('File was not uploaded');
     }
 
     if (!expectedHash) {
-      const currentCorrelationId =
-        this.clsService.get<string>('correlationId') ?? 'unknown';
-      throw new BadRequestException({
-        message: 'Missing required headers',
-        missing: ['x-expected-hash'],
-        correlationId: currentCorrelationId,
-      });
+      throw new BadRequestException('Missing required header: X-Expected-Hash');
     }
 
-    const correlationId = this.clsService.get<string>('correlationId') ?? '';
+    if (!tenantId) {
+      throw new BadRequestException('Missing required header: X-Tenant-ID');
+    }
+
+    const correlationId =
+      this.clsService.get<string>('correlationId') ?? 'not-provided';
 
     await this.appService.processSyncTransaction(
       uploadedFile,
-      expectedHash,
+      uploadedFile.sha256,
       correlationId,
       tenantId,
     );

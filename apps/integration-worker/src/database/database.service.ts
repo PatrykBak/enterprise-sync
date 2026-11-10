@@ -13,13 +13,12 @@ export class DatabaseService
   private pool: Pool;
 
   constructor(private readonly configService: ConfigService) {
-    const connectionString = configService.get<string>('DATABASE_URL');
+    const connectionString = configService.getOrThrow<string>('DATABASE_URL');
 
-    if (!connectionString) {
-      throw new Error('DATABASE_URL environment variable is required');
-    }
-
-    const pool = new pg.Pool({ connectionString });
+    const pool = new pg.Pool({
+      connectionString,
+      max: 10,
+    });
     const adapter = new PrismaPg(pool);
 
     super({ adapter });
@@ -38,6 +37,10 @@ export class DatabaseService
   async saveTransactionsBatch(
     transactions: Prisma.TransactionLogCreateManyInput[],
   ): Promise<void> {
+    if (transactions.length === 0) {
+      return;
+    }
+
     await this.transactionLog.createMany({
       data: transactions,
       skipDuplicates: true,

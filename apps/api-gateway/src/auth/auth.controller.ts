@@ -1,19 +1,16 @@
-import { Controller, Post, Body, UnauthorizedException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UnauthorizedException,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { IsNotEmpty, IsString } from 'class-validator';
 import { createHash, timingSafeEqual } from 'crypto';
 import type { JwtPayload } from './jwt.strategy';
-
-export class LoginDto {
-  @IsString()
-  @IsNotEmpty()
-  clientId!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  clientSecret!: string;
-}
+import { LoginDto } from './dto/login.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -23,10 +20,17 @@ export class AuthController {
   ) {}
 
   @Post('login')
+  @HttpCode(HttpStatus.OK)
   login(@Body() loginDto: LoginDto): { accessToken: string } {
     const { clientId, clientSecret } = loginDto;
+    const expectedClientId =
+      this.configService.get<string>('EXPECTED_CLIENT_ID') ?? 'admin-client';
     const expectedSecret =
-      this.configService.get<string>('DEV_SECRET_TOKEN') || 'dev-secret-token';
+      this.configService.getOrThrow<string>('DEV_SECRET_TOKEN');
+
+    if (clientId !== expectedClientId) {
+      throw new UnauthorizedException('Invalid client credentials');
+    }
 
     const secretHash = createHash('sha256').update(clientSecret).digest();
     const expectedHash = createHash('sha256').update(expectedSecret).digest();

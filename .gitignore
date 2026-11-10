@@ -1,8 +1,15 @@
 node_modules/
 dist/
-.kilo
+coverage/
+
+.kilo/
+.kilocode/
+.opencode/
 
 .env
+.env.*
+!.env.example
 
 *.log
-dummy-2000mb.ndjson
+*.ndjson
+dummy-*.ndjson
