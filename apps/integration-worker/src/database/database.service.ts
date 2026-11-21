@@ -57,6 +57,7 @@ export class DatabaseService
       select: { status: true },
     });
 
+    // Prevent redelivered or out-of-order messages from regressing a completed job.
     if (existing?.status === 'COMPLETED' && status === 'PROCESSING') {
       return;
     }

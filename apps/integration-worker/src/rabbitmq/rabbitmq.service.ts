@@ -72,6 +72,7 @@ export class RabbitMQConsumerService implements OnModuleInit, OnModuleDestroy {
         : '';
     const rabbitUrl = `amqp://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}${vhostPart}`;
 
+    // Work around @types/amqplib connect() return type mismatch with ChannelModel.
     this.connection = (await connect(rabbitUrl, {
       heartbeat: 30,
       timeout: 10000,
@@ -226,6 +227,7 @@ export class RabbitMQConsumerService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // fileId is also used as the integration_jobs primary key (jobId).
       await this.databaseService.updateJobStatus(
         payload.fileId,
         payload.fileId,
@@ -279,6 +281,8 @@ export class RabbitMQConsumerService implements OnModuleInit, OnModuleDestroy {
       const isFatal = this.isFatalError(error);
       const isRedelivered = msg.fields.redelivered;
 
+      // Retry transient errors once via requeue; any fatal error or already-redelivered
+      // failure releases the lock and dead-letters to tx-sync-jobs-dlq.
       if (isFatal || isRedelivered) {
         this.logger.error(
           `Routing message to DLQ (fatal: ${isFatal}, redelivered: ${isRedelivered})`,

@@ -43,6 +43,7 @@ export class AppLogger extends ConsoleLogger {
     try {
       return this.clsService?.get<string>("correlationId");
     } catch {
+      // CLS throws outside an active request/AMQP scope (e.g., during bootstrap or shutdown).
       return undefined;
     }
   }

@@ -80,6 +80,7 @@ export class TransactionProcessorService {
       buffer.push(masked);
 
       if (buffer.length >= batchSize) {
+        // Copy before clearing so the in-place reset cannot mutate the pending batch.
         await this.databaseService.saveTransactionsBatch([...buffer]);
         buffer.length = 0;
       }

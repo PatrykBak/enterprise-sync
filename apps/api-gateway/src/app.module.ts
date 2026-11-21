@@ -27,6 +27,7 @@ const throttlerRedisProvider: Provider = {
       port: configService.get<number>('REDIS_PORT', 6379),
       password: configService.get<string>('REDIS_PASSWORD'),
       db: configService.get<number>('REDIS_DB', 0),
+      // Fail fast on Redis outage instead of buffering rate-limit commands in memory.
       enableOfflineQueue: false,
     });
   },

@@ -47,6 +47,7 @@ export class S3ReaderService implements OnModuleInit, OnModuleDestroy {
         accessKeyId,
         secretAccessKey,
       },
+      // Path-style addressing and WHEN_REQUIRED checksums are needed for MinIO compatibility.
       forcePathStyle: true,
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
@@ -98,6 +99,7 @@ export class S3ReaderService implements OnModuleInit, OnModuleDestroy {
             yield trimmed;
           }
         } finally {
+          // Always tear down readline and the S3 body stream on early exit or error.
           rl.close();
           body.destroy();
         }

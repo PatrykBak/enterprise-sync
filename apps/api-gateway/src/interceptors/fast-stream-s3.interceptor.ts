@@ -121,6 +121,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
 
       bb.on('file', (_name, fileStream, info) => {
         if (isFileDetected) {
+          // Busboy stalls multipart parsing unless unwanted file streams are drained.
           fileStream.resume();
           return;
         }
@@ -129,6 +130,7 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         const { filename, mimeType } = info;
 
         if (!this.ALLOWED_MIME_TYPES.includes(mimeType)) {
+          // Drain the rejected stream so Busboy can finish parsing and emit 'close'.
           fileStream.resume();
           return reject(
             new BadRequestException(
@@ -170,6 +172,8 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         });
 
         const uploadPromise = uploadTask.done();
+        // Attach a no-op handler immediately so an early abort/S3 failure does not
+        // trigger an UnhandledPromiseRejection while pipelinePromise is still awaited.
         uploadPromise.catch(() => {});
 
         const pipelinePromise = pipeline(
@@ -252,6 +256,8 @@ export class FastStreamToS3Interceptor implements NestInterceptor {
         );
         await uploadTask?.abort();
 
+        // Single-part uploads can finish before abort() runs; delete defensively so
+        // mismatched data does not remain in S3.
         try {
           await this.s3Client.send(
             new DeleteObjectCommand({
